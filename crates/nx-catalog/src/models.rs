@@ -58,7 +58,7 @@ fn range_bound<'de, D: Deserializer<'de>>(de: D) -> Result<Option<f64>, D::Error
     enum Raw {
         Number(f64),
         Bool(bool),
-        Text(String),
+        Text(#[allow(dead_code)] String),
     }
     Ok(match Raw::deserialize(de)? {
         Raw::Number(n) => Some(n),

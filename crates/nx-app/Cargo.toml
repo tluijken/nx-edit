@@ -1,0 +1,16 @@
+[package]
+name = "nx-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nx-edit"
+path = "src/main.rs"
+
+[dependencies]
+nx-hlx = { path = "../nx-hlx" }
+nx-catalog = { path = "../nx-catalog" }
+eframe = "0.37"
+egui = "0.37"
+serde_json.workspace = true
