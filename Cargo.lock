@@ -2008,6 +2008,7 @@ name = "nx-proto"
 version = "0.1.0"
 dependencies = [
  "nx-capture",
+ "nx-catalog",
  "nx-hlx",
  "rmpv",
  "thiserror 2.0.21",

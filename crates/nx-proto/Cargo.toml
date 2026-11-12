@@ -10,4 +10,5 @@ thiserror.workspace = true
 
 [dev-dependencies]
 nx-capture = { path = "../nx-capture" }
+nx-catalog = { path = "../nx-catalog" }
 nx-hlx = { path = "../nx-hlx" }

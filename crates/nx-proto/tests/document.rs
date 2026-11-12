@@ -170,8 +170,10 @@ fn blocks_agree_with_the_imported_hlx() {
             .find(|p| p.path == b.path as usize && p.position == b.position as usize)
             .unwrap_or_else(|| panic!("{} not in the document", b.key));
         assert_eq!(p.block.enabled, b.enabled, "{}", b.key);
-        // Every hlx parameter value appears among the block's values (order is Helix.sym's).
-        for (name, value) in &b.params {
+        // Every hlx parameter value appears among the block's values; the order needs Helix.sym, see
+        // every_value_matches_the_hlx_by_helix_sym_parameter_name. Scale is not a parameter of the mono
+        // Ducked Delay and was dropped by the device.
+        for (name, value) in b.params.iter().filter(|(n, _)| !(b.key == "block4" && n == "Scale")) {
             let want = value.as_f64().unwrap_or_else(|| if value.as_bool().unwrap() { 1.0 } else { 0.0 });
             assert!(
                 p.block
@@ -390,4 +392,43 @@ fn growing_a_value_moves_the_section_table() {
         assert!(*new == *old || *new == *old + delta);
     }
     assert_eq!(again.sections()[10], grown.len() as u32);
+}
+
+/// HX Edit's `Helix.sym`, which is Line 6's and not in the repo; `None` (test skipped) without it.
+fn helix_sym() -> Option<nx_catalog::ModelSymbols> {
+    let dir = std::env::var_os("NX_HXEDIT_RES").map(PathBuf::from).unwrap_or_else(nx_catalog::default_res_dir);
+    let path = dir.join("Helix.sym");
+    if !path.exists() {
+        eprintln!("skipped: no Helix.sym in {} (set NX_HXEDIT_RES)", dir.display());
+        return None;
+    }
+    Some(nx_catalog::ModelSymbols::load(&path).unwrap())
+}
+
+#[test]
+fn every_value_matches_the_hlx_by_helix_sym_parameter_name() {
+    let Some(syms) = helix_sym() else { return };
+    let hlx = nx_hlx::Preset::from_slice(include_bytes!("../../nx-hlx/tests/fixtures/Revv_DM.hlx")).unwrap();
+    let preset = Document::decode(&document("02-select-preset-01C")).unwrap().preset().unwrap();
+    let mut unknown = Vec::new();
+    for b in hlx.blocks() {
+        let placed = preset.blocks().find(|p| p.path == b.path as usize && p.position == b.position as usize).unwrap();
+        let sym = syms.get(placed.block.model).unwrap();
+        assert_eq!(nx_catalog::shared_id(&sym.symbol), b.model, "{}", b.key);
+        for (name, value) in &b.params {
+            let Some(i) = sym.parameters.iter().position(|p| p == name) else {
+                unknown.push(format!("{}.{name}", b.key));
+                continue;
+            };
+            let got = placed.block.values.values[i].as_f64().unwrap();
+            let want = value.as_f64().unwrap_or_else(|| if value.as_bool().unwrap() { 1.0 } else { 0.0 });
+            assert!((got - want).abs() < 1e-6, "{}.{name}: document {got}, hlx {want}", b.key);
+        }
+        // Values past the named parameters: `@trails` on the delay and the hall, nothing elsewhere.
+        let extra = placed.block.values.values.len() as i64 - placed.block.values.params;
+        assert_eq!(extra, i64::from(b.model == "HD2_DelayDuckedDelay" || b.model == "HD2_ReverbHall"), "{}", b.key);
+        assert!(placed.block.values.params as usize <= sym.parameters.len(), "{}", b.key);
+    }
+    // The generator wrote Scale, which only the stereo Ducked Delay has; the device dropped it.
+    assert_eq!(unknown, ["block4.Scale"]);
 }

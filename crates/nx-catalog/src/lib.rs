@@ -1,9 +1,11 @@
-//! HX Edit's model definitions (`*.models`) and category tree (`HX_ModelCatalog.json`), read from a
-//! local copy of HX Edit's `res` directory. The data is Line 6's and is never bundled with nx-edit.
+//! HX Edit's model definitions (`*.models`), category tree (`HX_ModelCatalog.json`) and model numbering
+//! (`Helix.sym`), read from a local copy of HX Edit's `res` directory. The data is Line 6's and is never
+//! bundled with nx-edit.
 
 mod categories;
 mod import;
 mod models;
+mod symbols;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,6 +13,7 @@ use std::path::{Path, PathBuf};
 pub use categories::Category;
 pub use import::{default_res_dir, import_installer};
 pub use models::{ModelDef, ParamDef};
+pub use symbols::{ModelSymbol, ModelSymbols, shared_id};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {

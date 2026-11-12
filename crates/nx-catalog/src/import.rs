@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::CatalogError;
 
-const FILES: &[&str] = &["HX_ModelCatalog.json", "HelixControls.json"];
+const FILES: &[&str] = &["HX_ModelCatalog.json", "HelixControls.json", "Helix.sym"];
 
 /// Where nx-edit keeps its imported copy of HX Edit's data.
 pub fn default_res_dir() -> PathBuf {
