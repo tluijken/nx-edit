@@ -5,6 +5,7 @@ const INTERRUPT: u8 = 1;
 
 /// One usbmon record (`Documentation/usb/usbmon.rst`); `mmapped` selects the 64-byte header of
 /// LINKTYPE_USB_LINUX_MMAPPED over the 48-byte one of LINKTYPE_USB_LINUX.
+#[allow(clippy::too_many_arguments)]
 fn urb(event: u8, kind: u8, ep: u8, dev: u8, bus: u16, ts: (i64, i32), data: &[u8], mmapped: bool) -> Vec<u8> {
     urb_with(0x1234, 0, event, kind, ep, dev, bus, ts, data, mmapped)
 }
@@ -51,7 +52,7 @@ fn pcap(linktype: u32, records: &[Vec<u8>]) -> Vec<u8> {
 fn pcapng(linktype: u16, records: &[Vec<u8>]) -> Vec<u8> {
     fn block(kind: u32, body: &[u8]) -> Vec<u8> {
         let mut body = body.to_vec();
-        while body.len() % 4 != 0 {
+        while !body.len().is_multiple_of(4) {
             body.push(0);
         }
         let len = (body.len() + 12) as u32;

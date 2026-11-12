@@ -30,7 +30,7 @@ fn every_capture_decodes_cleanly() {
         for t in &transfers {
             for frame in split_transfer(&t.data).unwrap_or_else(|e| panic!("{}: {e}", path.display())) {
                 for msg in reassembler.push(&frame).unwrap() {
-                    msg.decode().unwrap_or_else(|e| panic!("{}: {e} in {:02x?}", path.display(), &msg.body));
+                    msg.decode().unwrap_or_else(|e| panic!("{}: {e} in {:02x?}", path.display(), msg.body));
                     messages += 1;
                 }
             }

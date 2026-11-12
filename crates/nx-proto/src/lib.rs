@@ -3,9 +3,11 @@
 
 mod frame;
 mod message;
+mod rpc;
 
 pub use frame::{FORMAT_CHANNEL, FORMAT_HELLO, Frame, FrameKind, split_transfer};
 pub use message::{Message, Reassembler};
+pub use rpc::{RPC_CHANNEL, Request};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {
