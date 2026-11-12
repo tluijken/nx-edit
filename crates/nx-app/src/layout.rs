@@ -108,6 +108,13 @@ mod tests {
     }
 
     #[test]
+    fn model_missing_from_a_loaded_catalog_shows_raw_id() {
+        let lanes = lanes(&preset("Revv_DM.hlx"), Some(&catalog()));
+        let send = lanes[1].tiles.iter().find(|t| t.label == "HD2_SendMono1").unwrap();
+        assert_eq!(send.category_color, None);
+    }
+
+    #[test]
     fn unknown_model_shows_raw_id() {
         let lanes = lanes(&preset("Revv_DM.hlx"), None);
         assert!(labels(&lanes[0]).contains(&"HD2_AmpRevvGenRed"));

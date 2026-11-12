@@ -31,16 +31,45 @@ pub fn import_installer(installer: &Path, dest: &Path) -> Result<(), CatalogErro
     if !output.status.success() {
         return Err(CatalogError::Extract(String::from_utf8_lossy(&output.stderr).into_owned()));
     }
-    let res = scratch.join("HX Edit/res");
-    let io = |path: &Path| {
-        let path = path.to_owned();
-        move |source| CatalogError::Io { path, source }
-    };
-    fs::create_dir_all(dest).map_err(io(dest))?;
-    for entry in fs::read_dir(&res).map_err(io(&res))? {
-        let path = entry.map_err(io(&res))?.path();
-        fs::copy(&path, dest.join(path.file_name().unwrap())).map_err(io(&path))?;
-    }
+    replace_dir_contents(&scratch.join("HX Edit/res"), dest)?;
     fs::remove_dir_all(&scratch).map_err(io(&scratch))?;
     Ok(())
+}
+
+fn io(path: &Path) -> impl FnOnce(std::io::Error) -> CatalogError {
+    let path = path.to_owned();
+    move |source| CatalogError::Io { path, source }
+}
+
+/// A newer HX Edit may rename or drop `.models` files; leftovers would still load and could shadow
+/// current definitions, so the destination is emptied first.
+fn replace_dir_contents(src: &Path, dest: &Path) -> Result<(), CatalogError> {
+    if dest.exists() {
+        fs::remove_dir_all(dest).map_err(io(dest))?;
+    }
+    fs::create_dir_all(dest).map_err(io(dest))?;
+    for entry in fs::read_dir(src).map_err(io(src))? {
+        let path = entry.map_err(io(src))?.path();
+        fs::copy(&path, dest.join(path.file_name().unwrap())).map_err(io(&path))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacing_the_data_removes_stale_files() {
+        let root = std::env::temp_dir().join(format!("nx-catalog-replace-{}", std::process::id()));
+        let (src, dest) = (root.join("src"), root.join("dest"));
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(src.join("amp.models"), "[]").unwrap();
+        fs::write(dest.join("renamed-away.models"), "[]").unwrap();
+        replace_dir_contents(&src, &dest).unwrap();
+        let names: Vec<_> = fs::read_dir(&dest).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("amp.models")]);
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
