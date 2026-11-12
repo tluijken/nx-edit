@@ -1972,8 +1972,11 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "nx-capture",
  "nx-catalog",
  "nx-hlx",
+ "nx-proto",
+ "rmpv",
  "serde_json",
 ]
 

@@ -98,6 +98,11 @@ impl Preset {
             .collect()
     }
 
+    /// Index of the active snapshot (`@current_snapshot` in `data.tone.global`), 0 when absent.
+    pub fn current_snapshot(&self) -> usize {
+        self.raw["data"]["tone"]["global"]["@current_snapshot"].as_u64().unwrap_or_default() as usize
+    }
+
     fn dsp0(&self) -> Option<&Map<String, Value>> {
         self.raw.get("data")?.get("tone")?.get("dsp0")?.as_object()
     }

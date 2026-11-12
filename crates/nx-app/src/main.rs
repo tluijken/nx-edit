@@ -1,12 +1,16 @@
 mod cli;
+mod device;
 mod layout;
 mod theme;
 mod view;
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let preset_path = match cli::parse(&args) {
-        cli::Command::Open(path) => path,
+    let mut status = Vec::new();
+    let res_dir = nx_catalog::default_res_dir();
+    let (preset_path, capture_path) = match cli::parse(&args) {
+        cli::Command::Open(path) => (path, None),
+        cli::Command::OpenCapture(path) => (None, Some(path)),
         cli::Command::Import(installer) => {
             let dest = nx_catalog::default_res_dir();
             match nx_catalog::import_installer(&installer, &dest) {
@@ -23,8 +27,22 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
-    let mut status = Vec::new();
-    let preset = preset_path.as_ref().and_then(|path| {
+    let from_capture = capture_path.as_ref().and_then(|path| {
+        let preset = nx_catalog::ModelSymbols::load(&res_dir.join("Helix.sym"))
+            .map_err(|e| e.to_string())
+            .and_then(|syms| device::preset_from_capture(path).and_then(|p| p.to_hlx(&syms)));
+        match preset {
+            Ok(p) => {
+                status.push(format!("uit opname {}", path.display()));
+                Some(p)
+            }
+            Err(e) => {
+                status.push(e);
+                None
+            }
+        }
+    });
+    let preset = from_capture.or_else(|| preset_path.as_ref().and_then(|path| {
         match std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| nx_hlx::Preset::from_slice(&b).map_err(|e| e.to_string())) {
             Ok(p) => Some(p),
             Err(e) => {
@@ -32,8 +50,7 @@ fn main() -> eframe::Result {
                 None
             }
         }
-    });
-    let res_dir = nx_catalog::default_res_dir();
+    }));
     let catalog = match nx_catalog::Catalog::load(&res_dir) {
         Ok(c) => Some(c),
         Err(e) => {

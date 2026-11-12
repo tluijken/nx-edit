@@ -91,3 +91,12 @@ fn missing_tone_is_a_shape_error() {
     let err = Preset::from_slice(br#"{"data":{}}"#).unwrap_err();
     assert!(matches!(err, nx_hlx::HlxError::Shape(_)));
 }
+
+#[test]
+fn current_snapshot_comes_from_global() {
+    let preset = Preset::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+    assert_eq!(preset.current_snapshot(), 0);
+    let mut v: serde_json::Value = serde_json::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+    v["data"]["tone"]["global"]["@current_snapshot"] = serde_json::json!(2);
+    assert_eq!(Preset::from_slice(&serde_json::to_vec(&v).unwrap()).unwrap().current_snapshot(), 2);
+}

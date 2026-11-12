@@ -29,8 +29,9 @@ impl EditorApp {
             let name = self.preset.as_ref().map_or("Geen preset", |p| p.name());
             ui.label(egui::RichText::new(name).font(theme::semibold(16.0)));
             if let Some(preset) = &self.preset {
+                let current = preset.current_snapshot();
                 for (i, snap) in preset.snapshot_names().iter().enumerate() {
-                    let (fill, text) = if i == 0 { (theme::ACCENT, theme::BG) } else { (theme::RAISED_HI, theme::TEXT) };
+                    let (fill, text) = if i == current { (theme::ACCENT, theme::BG) } else { (theme::RAISED_HI, theme::TEXT) };
                     egui::Frame::new().fill(fill).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(9, 3)).show(ui, |ui| {
                         ui.label(egui::RichText::new(snap).color(text).font(theme::semibold(12.0)));
                     });
