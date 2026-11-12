@@ -72,32 +72,34 @@ impl EditorApp {
         };
         let lanes = lanes(preset, self.catalog.as_ref());
         let has_send = preset.blocks().iter().any(|b| b.model.starts_with("HD2_Send"));
-        let split_x = preset.split().map(|s| s.position as f32);
         let origin = ui.max_rect().left_top() + vec2(16.0, 24.0);
         let painter = ui.painter().clone();
         let mut clicked = None;
         for (row, lane) in lanes.iter().enumerate() {
             let y = origin.y + row as f32 * (TILE.y + 40.0);
-            let start_col = if lane.path == 1 { split_x.unwrap_or(0.0) } else { 0.0 };
+            let first = lane.tiles.first().map_or(0.0, |t| f32::from(t.position));
+            let last = lanes.iter().flat_map(|l| &l.tiles).map(|t| t.position).max().map_or(0.0, |p| f32::from(p) + 1.0);
             let lane_rect = Rect::from_min_size(
-                pos2(origin.x - 8.0 + start_col * (TILE.x + GAP), y - 8.0),
-                vec2(lane.tiles.len() as f32 * (TILE.x + GAP) + 110.0, TILE.y + 16.0),
+                pos2(origin.x - 8.0 + first * (TILE.x + GAP), y - 8.0),
+                vec2((last - first) * (TILE.x + GAP) + 110.0, TILE.y + 16.0),
             );
             painter.rect_filled(lane_rect, CornerRadius::same(8), theme::LANE);
-            for (col, tile) in lane.tiles.iter().enumerate() {
-                let x = origin.x + (start_col + col as f32) * (TILE.x + GAP);
+            let mut previous_end: Option<f32> = None;
+            for tile in &lane.tiles {
+                let x = origin.x + f32::from(tile.position) * (TILE.x + GAP);
                 let rect = Rect::from_min_size(pos2(x, y), TILE);
-                if col > 0 {
-                    let a = pos2(x - GAP + 4.0, y + TILE.y / 2.0);
-                    painter.line_segment([a, a + vec2(GAP - 8.0, 0.0)], Stroke::new(1.5, theme::TEXT_DIM));
+                if let Some(end) = previous_end {
+                    let a = pos2(end + 4.0, y + TILE.y / 2.0);
+                    painter.line_segment([a, pos2(x - 4.0, a.y)], Stroke::new(1.5, theme::TEXT_DIM));
                 }
+                previous_end = Some(rect.right());
                 let response = ui.interact(rect, ui.scope_id().with(&tile.block_key), Sense::click());
                 if response.clicked() {
                     clicked = Some(tile.block_key.clone());
                 }
                 self.paint_tile(&painter, rect, tile);
             }
-            let end = origin.x + (start_col + lane.tiles.len() as f32) * (TILE.x + GAP);
+            let end = origin.x + last * (TILE.x + GAP);
             let output = if lane.path == 1 && has_send { "Send" } else { "Main L/R" };
             painter.text(pos2(end, y + TILE.y / 2.0), Align2::LEFT_CENTER, format!("→ {output}"), theme::semibold(12.0), theme::TEXT_DIM);
         }

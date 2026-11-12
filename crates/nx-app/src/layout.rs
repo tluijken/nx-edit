@@ -11,6 +11,8 @@ pub struct Lane {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tile {
     pub block_key: String,
+    /// The block's slot on the pedal; empty slots leave gaps in the drawing.
+    pub position: u8,
     pub label: String,
     pub category_color: Option<u32>,
     pub enabled: bool,
@@ -28,6 +30,7 @@ pub fn lanes(preset: &Preset, catalog: Option<&Catalog>) -> Vec<Lane> {
                 c.categories().iter().find(|cat| cat.model_ids.contains(&block.model)).map(|cat| cat.color)
             }),
             enabled: block.enabled,
+            position: block.position,
             block_key: block.key,
         };
         if block.path == 0 {
@@ -108,6 +111,21 @@ mod tests {
     fn unknown_model_shows_raw_id() {
         let lanes = lanes(&preset("Revv_DM.hlx"), None);
         assert!(labels(&lanes[0]).contains(&"HD2_AmpRevvGenRed"));
+    }
+
+    #[test]
+    fn tiles_keep_their_slot_positions() {
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&preset("Revv_DM.hlx").to_vec_pretty()).unwrap();
+        let dsp0 = v["data"]["tone"]["dsp0"].as_object_mut().unwrap();
+        dsp0.retain(|k, _| !matches!(k.as_str(), "block1" | "block3" | "block4" | "block5"));
+        dsp0["block2"]["@position"] = serde_json::json!(4);
+        let preset = Preset::from_slice(&serde_json::to_vec(&v).unwrap()).unwrap();
+        let lanes = lanes(&preset, None);
+        let top: Vec<u8> = lanes[0].tiles.iter().map(|t| t.position).collect();
+        let bottom: Vec<u8> = lanes[1].tiles.iter().map(|t| t.position).collect();
+        assert_eq!(top, vec![0, 4]);
+        assert_eq!(bottom, vec![6, 7]);
     }
 
     #[test]
