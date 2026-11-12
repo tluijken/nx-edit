@@ -1,6 +1,6 @@
 //! Byte strings below are transfers from `captures/` (session 1), copied verbatim.
 
-use nx_proto::{FrameKind, Message, Reassembler, split_transfer};
+use nx_proto::{Frame, FrameKind, Message, Reassembler, split_transfer};
 
 fn hex(s: &str) -> Vec<u8> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
@@ -85,4 +85,45 @@ fn reassembles_a_message_split_over_frames() {
     let mut r = Reassembler::default();
     assert!(r.push(&f).unwrap().is_empty());
     assert_eq!(r.pending(f.src, f.dst), Some(2812 + 8));
+}
+
+#[test]
+fn sequence_is_one_byte_that_wraps() {
+    // 04-bypass-toggle: the host's keep-alives on 0x1080 go from seq 0xff to 0x00, 0x01.
+    let before = &split_transfer(&hex("080000188010ed0300ff0010b6290000")).unwrap()[0];
+    let after = &split_transfer(&hex("080000188010ed0300000010b6290000")).unwrap()[0];
+    assert_eq!(before.seq(), Some(0xff));
+    assert_eq!(after.seq(), Some(0x00));
+}
+
+#[test]
+fn kind_two_on_a_channel_frame_is_a_close() {
+    // 06-reconnect: HX Edit ends its probe of 0x1001 with this frame and the device answers in kind.
+    let f = &split_transfer(&hex("080000180110ef030004000220100000")).unwrap()[0];
+    assert_eq!(f.kind(), Some(FrameKind::Close));
+}
+
+#[test]
+fn builds_host_frames_byte_for_byte() {
+    let payload = &split_transfer(&hex(SELECT_PRESET_OUT)).unwrap()[0].payload().unwrap().to_vec();
+    let f = Frame::channel(0x1080, 0x03ed, 0x58, FrameKind::Data, 0x1c05, payload);
+    assert_eq!(f.encode(), hex(SELECT_PRESET_OUT));
+    let ka = Frame::channel(0x1001, 0x03ef, 0x21, FrameKind::KeepAlive, 0x1d2f, &[]);
+    assert_eq!(ka.encode(), hex("080000180110ef03002100102f1d0000"));
+    let hello = Frame::hello(0x1001, 0x03ef, &hex("000000020001002100100000"));
+    assert_eq!(hello.encode(), hex(HELLO_OUT));
+}
+
+#[test]
+fn reassembler_reports_buffered_bytes() {
+    let f = split_transfer(&hex(SELECT_PRESET_OUT)).unwrap().remove(0);
+    let mut r = Reassembler::default();
+    let mut half = f.clone();
+    half.body.truncate(8 + 4);
+    assert!(r.push(&half).unwrap().is_empty());
+    assert_eq!(r.buffered(f.src, f.dst), 4);
+    let mut rest = f.clone();
+    rest.body.drain(8..12);
+    assert_eq!(r.push(&rest).unwrap().len(), 1);
+    assert_eq!(r.buffered(f.src, f.dst), 0);
 }
