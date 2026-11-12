@@ -2013,6 +2013,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nx-session"
+version = "0.1.0"
+dependencies = [
+ "nx-capture",
+ "nx-proto",
+ "nx-session",
+ "rmpv",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "objc-sys"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
