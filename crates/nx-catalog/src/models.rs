@@ -17,21 +17,25 @@ pub struct ModelDef {
     pub params: Vec<ParamDef>,
 }
 
+/// Every field but the id may be missing in a future HX Edit release; a missing name falls back to
+/// the id, missing ranges to `None`, a missing default to `null`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ParamDef {
     #[serde(rename = "symbolicID")]
     pub id: String,
+    #[serde(default)]
     pub name: String,
-    #[serde(rename = "valueType")]
+    #[serde(rename = "valueType", default)]
     pub value_type: u8,
     #[serde(rename = "displayType")]
     pub display_type: Option<String>,
     /// Switch parameters store their range as booleans; those become 0.0 and 1.0. Text parameters
     /// (`value_type` 3) have no range.
-    #[serde(deserialize_with = "range_bound")]
+    #[serde(default, deserialize_with = "range_bound")]
     pub min: Option<f64>,
-    #[serde(deserialize_with = "range_bound")]
+    #[serde(default, deserialize_with = "range_bound")]
     pub max: Option<f64>,
+    #[serde(default)]
     pub default: serde_json::Value,
 }
 
@@ -49,7 +53,14 @@ pub(crate) fn model_files(res_dir: &Path) -> Result<Vec<PathBuf>, CatalogError> 
 
 pub(crate) fn read_models(path: &Path) -> Result<Vec<ModelDef>, CatalogError> {
     let bytes = fs::read(path).map_err(|source| CatalogError::Io { path: path.to_owned(), source })?;
-    serde_json::from_slice(&bytes).map_err(|source| CatalogError::Json { path: path.to_owned(), source })
+    let mut models: Vec<ModelDef> =
+        serde_json::from_slice(&bytes).map_err(|source| CatalogError::Json { path: path.to_owned(), source })?;
+    for param in models.iter_mut().flat_map(|m| &mut m.params) {
+        if param.name.is_empty() {
+            param.name = param.id.clone();
+        }
+    }
+    Ok(models)
 }
 
 fn range_bound<'de, D: Deserializer<'de>>(de: D) -> Result<Option<f64>, D::Error> {

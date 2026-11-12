@@ -62,6 +62,21 @@ fn text_parameters_have_no_range() {
 }
 
 #[test]
+fn params_missing_their_fields_still_load() {
+    let dir = std::env::temp_dir().join(format!("nx-catalog-sparse-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(fixture_dir().join("HX_ModelCatalog.json"), dir.join("HX_ModelCatalog.json")).unwrap();
+    std::fs::write(dir.join("future.models"), r#"[{"symbolicID":"HD2_Future","params":[{"symbolicID":"Mystery"}]}]"#).unwrap();
+    let catalog = Catalog::load(&dir).unwrap();
+    let param = &catalog.model("HD2_Future").unwrap().params[0];
+    assert_eq!(param.id, "Mystery");
+    assert_eq!(param.name, "Mystery");
+    assert_eq!((param.min, param.max), (None, None));
+    assert_eq!(param.default, serde_json::Value::Null);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn missing_directory_is_an_error() {
     assert!(Catalog::load(&fixture_dir().join("does-not-exist")).is_err());
 }
