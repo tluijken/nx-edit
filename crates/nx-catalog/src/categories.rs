@@ -12,6 +12,14 @@ pub struct Category {
     pub color: u32,
     /// Models of the category and all its subcategories, in HX Edit's order.
     pub model_ids: Vec<String>,
+    /// HX Edit's subcategories (Mono, Stereo, Legacy, ...); empty when the category has none.
+    pub groups: Vec<CategoryGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CategoryGroup {
+    pub name: String,
+    pub model_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +41,8 @@ struct RawCategory {
 
 #[derive(Deserialize)]
 struct RawSubcategory {
+    #[serde(default)]
+    name: String,
     #[serde(default)]
     models: Vec<RawModel>,
 }
@@ -57,6 +67,14 @@ pub(crate) fn read_categories(path: &Path) -> Result<Vec<Category>, CatalogError
                 .iter()
                 .chain(c.subcategories.iter().flat_map(|s| &s.models))
                 .map(|m| m.id.clone())
+                .collect(),
+            groups: c
+                .subcategories
+                .iter()
+                .map(|s| CategoryGroup {
+                    name: s.name.clone(),
+                    model_ids: s.models.iter().map(|m| m.id.clone()).collect(),
+                })
                 .collect(),
             name: c.name,
         })

@@ -8,7 +8,7 @@ mod models;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub use categories::Category;
+pub use categories::{Category, CategoryGroup};
 pub use import::{default_res_dir, import_installer};
 pub use models::{ModelDef, ParamDef};
 

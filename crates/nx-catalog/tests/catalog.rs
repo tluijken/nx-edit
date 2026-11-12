@@ -77,6 +77,16 @@ fn params_missing_their_fields_still_load() {
 }
 
 #[test]
+fn categories_keep_hx_edit_groups() {
+    let catalog = Catalog::load(&fixture_dir()).unwrap();
+    let dist = &catalog.categories()[1];
+    let names: Vec<&str> = dist.groups.iter().map(|g| g.name.as_str()).collect();
+    assert_eq!(names, vec!["Mono", "Stereo", "Legacy"]);
+    assert!(dist.groups[0].model_ids.iter().any(|id| id == "HD2_DistKinkyBoost"));
+    assert!(catalog.categories()[0].groups.is_empty());
+}
+
+#[test]
 fn missing_directory_is_an_error() {
     assert!(Catalog::load(&fixture_dir().join("does-not-exist")).is_err());
 }

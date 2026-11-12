@@ -56,9 +56,16 @@ impl EditorApp {
                     self.selected_category = i;
                 }
                 if selected {
-                    for id in &cat.model_ids {
-                        let name = catalog.model(id).and_then(|m| m.name.as_deref()).unwrap_or(id);
-                        ui.label(egui::RichText::new(format!("   {name}")).color(theme::TEXT_MID));
+                    let ungrouped = [nx_catalog::CategoryGroup { name: String::new(), model_ids: cat.model_ids.clone() }];
+                    let groups = if cat.groups.is_empty() { &ungrouped[..] } else { &cat.groups[..] };
+                    for group in groups {
+                        if !group.name.is_empty() {
+                            ui.label(egui::RichText::new(format!("  {}", group.name)).color(theme::TEXT_DIM).font(theme::semibold(11.0)));
+                        }
+                        for id in &group.model_ids {
+                            let name = catalog.model(id).and_then(|m| m.name.as_deref()).unwrap_or(id);
+                            ui.label(egui::RichText::new(format!("    {name}")).color(theme::TEXT_MID));
+                        }
                     }
                 }
             }
