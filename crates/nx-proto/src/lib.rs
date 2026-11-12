@@ -1,10 +1,15 @@
 //! The HX Stomp editor protocol on interface `MI_00`, derived from nx-edit's own captures with
 //! tonepush's PROTOCOL.md as a map. Pure codec: no I/O.
 
+mod document;
 mod frame;
 mod message;
 mod rpc;
 
+pub use document::{
+    Assignment, Block, ControllerValue, Cursor, DocError, Document, Dsp, Endpoint, Firmware, IntForm, Item, Junction,
+    LenForm, ParamValue, Placed, Preset, SlotKind, SlotState, Snapshot, Snapshots, Values,
+};
 pub use frame::{FORMAT_CHANNEL, FORMAT_HELLO, Frame, FrameKind, split_transfer};
 pub use message::{Message, Reassembler};
 pub use rpc::{RPC_CHANNEL, Request};
