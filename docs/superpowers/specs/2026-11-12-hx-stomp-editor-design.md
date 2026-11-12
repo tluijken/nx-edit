@@ -207,8 +207,9 @@ update on the pedal. When flashing is taken up later, it stays disabled until al
 - **Captures are made in short scripted sessions:** Thomas clicks through HX Edit in the VM following a
   written script; the builder records and labels. The builder can also drive the VM's keyboard and take
   screenshots, but not reliably click.
-- **The repo stays local and private;** captures and fixtures are committed. They contain Line 6 data
-  (model ids, preset contents), so the repo must not be published as is.
+- **The repo lives on GitHub as a private repository** (decided by Thomas); captures and fixtures are
+  committed. They contain Line 6 data (model ids, preset contents), so the repo must never be made public
+  as is.
 - **`nx-session` is runtime-agnostic:** it owns a thread and talks over channels, so it works inside
   Scythe later (Scythe uses tokio) without depending on it.
 
