@@ -1981,6 +1981,7 @@ dependencies = [
 name = "nx-capture"
 version = "0.1.0"
 dependencies = [
+ "nx-proto",
  "pcap-file",
  "thiserror 2.0.21",
 ]

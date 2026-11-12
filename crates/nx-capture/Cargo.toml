@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 pcap-file = "2"
 thiserror.workspace = true
+nx-proto = { path = "../nx-proto" }
