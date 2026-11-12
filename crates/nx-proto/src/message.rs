@@ -55,6 +55,11 @@ impl Reassembler {
         Ok(out)
     }
 
+    /// Bytes of an unfinished message held for a stream; 0 when every message so far was complete.
+    pub fn buffered(&self, src: u16, dst: u16) -> usize {
+        self.streams.get(&(src, dst)).map_or(0, Vec::len)
+    }
+
     /// Total size (header included) of the message being assembled on a stream, if one is open.
     pub fn pending(&self, src: u16, dst: u16) -> Option<usize> {
         self.streams.get(&(src, dst)).and_then(|b| message_len(b))

@@ -1,0 +1,18 @@
+[package]
+name = "nx-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# A scripted HX Stomp for tests and for developing the editor without the pedal.
+fake = []
+
+[dependencies]
+nx-proto = { path = "../nx-proto" }
+rmpv = "1"
+thiserror.workspace = true
+
+[dev-dependencies]
+nx-capture = { path = "../nx-capture" }
+nx-session = { path = ".", features = ["fake"] }

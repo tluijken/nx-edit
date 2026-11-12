@@ -6,8 +6,10 @@
 //! 3  u8      header format: 0x18 for channel frames, 0x28 for HELLO
 //! 4  u16 LE  source endpoint id   (host 0x1001/0x1002/0x1080, device 0x03ef/0x03f0/0x03ed)
 //! 6  u16 LE  destination endpoint id
-//! 8  body; for 0x18: u16 BE sequence, u8 0, u8 kind, u32 LE acknowledgement, payload
+//! 8  body; for 0x18: u8 0, u8 sequence, u8 0, u8 kind, u32 LE acknowledgement, payload
 //! ```
+//!
+//! The sequence is a single byte: it wraps from 0xff to 0x00 in `04` and `05`.
 //!
 //! A bulk transfer carries one or more frames, each padded to a multiple of 4 bytes.
 
@@ -19,6 +21,8 @@ pub const FORMAT_HELLO: u8 = 0x28;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameKind {
     Hello,
+    /// Kind 0x02 on a channel frame: ends a channel; the device answers with its own.
+    Close,
     Data,
     Ack,
     DataAck,
@@ -28,13 +32,23 @@ pub enum FrameKind {
 impl FrameKind {
     fn from_byte(b: u8) -> Option<Self> {
         Some(match b {
-            0x02 => Self::Hello,
+            0x02 => Self::Close,
             0x04 => Self::Data,
             0x08 => Self::Ack,
             0x0c => Self::DataAck,
             0x10 => Self::KeepAlive,
             _ => return None,
         })
+    }
+
+    pub fn byte(self) -> u8 {
+        match self {
+            Self::Hello | Self::Close => 0x02,
+            Self::Data => 0x04,
+            Self::Ack => 0x08,
+            Self::DataAck => 0x0c,
+            Self::KeepAlive => 0x10,
+        }
     }
 }
 
@@ -47,21 +61,36 @@ pub struct Frame {
 }
 
 impl Frame {
+    pub fn channel(src: u16, dst: u16, seq: u8, kind: FrameKind, ack: u32, payload: &[u8]) -> Self {
+        let mut body = Vec::with_capacity(8 + payload.len());
+        body.extend_from_slice(&[0, seq, 0, kind.byte()]);
+        body.extend_from_slice(&ack.to_le_bytes());
+        body.extend_from_slice(payload);
+        Self { format: FORMAT_CHANNEL, src, dst, body }
+    }
+
+    pub fn hello(src: u16, dst: u16, body: &[u8]) -> Self {
+        Self { format: FORMAT_HELLO, src, dst, body: body.to_vec() }
+    }
+
     pub fn kind(&self) -> Option<FrameKind> {
+        if self.format == FORMAT_HELLO {
+            return Some(FrameKind::Hello);
+        }
         FrameKind::from_byte(*self.body.get(3)?)
     }
 
-    pub fn seq(&self) -> Option<u16> {
-        self.channel().map(|b| u16::from_be_bytes([b[0], b[1]]))
+    pub fn seq(&self) -> Option<u8> {
+        self.channel_body().map(|b| b[1])
     }
 
     pub fn ack(&self) -> Option<u32> {
-        self.channel().map(|b| u32::from_le_bytes([b[4], b[5], b[6], b[7]]))
+        self.channel_body().map(|b| u32::from_le_bytes([b[4], b[5], b[6], b[7]]))
     }
 
     /// Stream bytes carried by a channel frame (empty for keep-alives and acks).
     pub fn payload(&self) -> Option<&[u8]> {
-        self.channel().map(|b| &b[8..])
+        self.channel_body().map(|b| &b[8..])
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -76,7 +105,7 @@ impl Frame {
         out
     }
 
-    fn channel(&self) -> Option<&[u8]> {
+    fn channel_body(&self) -> Option<&[u8]> {
         (self.format == FORMAT_CHANNEL && self.body.len() >= 8).then_some(&self.body[..])
     }
 }
