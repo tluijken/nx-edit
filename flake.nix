@@ -13,10 +13,10 @@
         wayland
         libGL
         vulkan-loader
-        xorg.libX11
-        xorg.libXcursor
-        xorg.libXrandr
-        xorg.libXi
+        libx11
+        libxcursor
+        libxrandr
+        libxi
       ];
     in {
       devShells.${system}.default = pkgs.mkShell {
