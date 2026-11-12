@@ -1,25 +1,28 @@
+mod cli;
 mod layout;
 mod theme;
 mod view;
 
-use std::path::PathBuf;
-
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let [flag, installer] = args.as_slice()
-        && flag == "--import-hxedit"
-    {
-        let dest = nx_catalog::default_res_dir();
-        match nx_catalog::import_installer(installer.as_ref(), &dest) {
-            Ok(()) => println!("HX Edit-data geïmporteerd in {}", dest.display()),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
+    let preset_path = match cli::parse(&args) {
+        cli::Command::Open(path) => path,
+        cli::Command::Import(installer) => {
+            let dest = nx_catalog::default_res_dir();
+            match nx_catalog::import_installer(&installer, &dest) {
+                Ok(()) => println!("HX Edit-data geïmporteerd in {}", dest.display()),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
             }
+            return Ok(());
         }
-        return Ok(());
-    }
-    let preset_path = args.first().map(PathBuf::from);
+        cli::Command::Usage => {
+            eprintln!("{}", cli::USAGE);
+            std::process::exit(2);
+        }
+    };
     let mut status = Vec::new();
     let preset = preset_path.as_ref().and_then(|path| {
         match std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| nx_hlx::Preset::from_slice(&b).map_err(|e| e.to_string())) {
@@ -33,8 +36,8 @@ fn main() -> eframe::Result {
     let res_dir = nx_catalog::default_res_dir();
     let catalog = match nx_catalog::Catalog::load(&res_dir) {
         Ok(c) => Some(c),
-        Err(_) => {
-            status.push(format!("geen HX Edit-data in {}", res_dir.display()));
+        Err(e) => {
+            status.push(cli::catalog_status(&e, &res_dir));
             None
         }
     };
