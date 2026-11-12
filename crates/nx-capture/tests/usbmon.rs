@@ -6,14 +6,19 @@ const INTERRUPT: u8 = 1;
 /// One usbmon record (`Documentation/usb/usbmon.rst`); `mmapped` selects the 64-byte header of
 /// LINKTYPE_USB_LINUX_MMAPPED over the 48-byte one of LINKTYPE_USB_LINUX.
 fn urb(event: u8, kind: u8, ep: u8, dev: u8, bus: u16, ts: (i64, i32), data: &[u8], mmapped: bool) -> Vec<u8> {
+    urb_with(0x1234, 0, event, kind, ep, dev, bus, ts, data, mmapped)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn urb_with(id: u64, status: i32, event: u8, kind: u8, ep: u8, dev: u8, bus: u16, ts: (i64, i32), data: &[u8], mmapped: bool) -> Vec<u8> {
     let mut r = Vec::new();
-    r.extend_from_slice(&0x1234u64.to_le_bytes());
+    r.extend_from_slice(&id.to_le_bytes());
     r.extend_from_slice(&[event, kind, ep, dev]);
     r.extend_from_slice(&bus.to_le_bytes());
     r.extend_from_slice(&[b'-', if data.is_empty() { b'<' } else { 0 }]);
     r.extend_from_slice(&ts.0.to_le_bytes());
     r.extend_from_slice(&ts.1.to_le_bytes());
-    r.extend_from_slice(&0i32.to_le_bytes());
+    r.extend_from_slice(&status.to_le_bytes());
     r.extend_from_slice(&(data.len() as u32).to_le_bytes());
     r.extend_from_slice(&(data.len() as u32).to_le_bytes());
     r.extend_from_slice(&[0; 8]);
@@ -154,4 +159,48 @@ fn preserves_order_by_timestamp() {
 fn rejects_other_linktypes() {
     let file = pcap(1, &[vec![0; 60]]);
     assert!(read_transfers(&file[..], &all()).is_err());
+}
+
+const ENOENT: i32 = -2;
+const EPIPE: i32 = -32;
+const EREMOTEIO: i32 = -121;
+
+#[test]
+fn drops_cancelled_in_completions() {
+    let file = pcap(220, &[
+        urb_with(1, ENOENT, b'C', BULK, 0x81, 42, 3, (1, 0), &[], true),
+        urb_with(2, 0, b'C', BULK, 0x81, 42, 3, (1, 1), &[7], true),
+    ]);
+    let transfers = read_transfers(&file[..], &all()).unwrap();
+    assert_eq!(transfers.iter().map(|t| t.data.clone()).collect::<Vec<_>>(), vec![vec![7]]);
+}
+
+#[test]
+fn keeps_short_in_packets() {
+    let file = pcap(220, &[urb_with(1, EREMOTEIO, b'C', BULK, 0x81, 42, 3, (1, 0), &[5], true)]);
+    assert_eq!(read_transfers(&file[..], &all()).unwrap().len(), 1);
+}
+
+#[test]
+fn drops_out_submissions_that_failed() {
+    let file = pcap(220, &[
+        urb_with(1, -115, b'S', BULK, 0x01, 42, 3, (1, 0), &[1], true),
+        urb_with(1, EPIPE, b'C', BULK, 0x01, 42, 3, (1, 1), &[], true),
+        urb_with(2, -115, b'S', BULK, 0x01, 42, 3, (1, 2), &[2], true),
+        urb_with(2, 0, b'C', BULK, 0x01, 42, 3, (1, 3), &[], true),
+    ]);
+    let transfers = read_transfers(&file[..], &all()).unwrap();
+    assert_eq!(transfers.iter().map(|t| t.data.clone()).collect::<Vec<_>>(), vec![vec![2]]);
+}
+
+#[test]
+fn reused_urb_ids_only_drop_the_failed_submission() {
+    let file = pcap(220, &[
+        urb_with(7, -115, b'S', BULK, 0x01, 42, 3, (1, 0), &[1], true),
+        urb_with(7, EPIPE, b'C', BULK, 0x01, 42, 3, (1, 1), &[], true),
+        urb_with(7, -115, b'S', BULK, 0x01, 42, 3, (1, 2), &[2], true),
+        urb_with(7, 0, b'C', BULK, 0x01, 42, 3, (1, 3), &[], true),
+    ]);
+    let transfers = read_transfers(&file[..], &all()).unwrap();
+    assert_eq!(transfers.iter().map(|t| t.data.clone()).collect::<Vec<_>>(), vec![vec![2]]);
 }
