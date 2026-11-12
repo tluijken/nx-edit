@@ -1,0 +1,12 @@
+[package]
+name = "nx-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rmpv = "1"
+thiserror.workspace = true
+
+[dev-dependencies]
+nx-capture = { path = "../nx-capture" }
