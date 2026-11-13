@@ -1,3 +1,4 @@
+mod account;
 mod cli;
 mod customtone;
 mod device;

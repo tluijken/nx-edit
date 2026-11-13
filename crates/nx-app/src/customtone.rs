@@ -1,73 +1,203 @@
-//! The CustomTone view: Line 6's shared HX Stomp presets, one page at a time, fetched on a thread
-//! so the window never waits on the network.
+//! The CustomTone view: Line 6's shared HX Stomp presets, one page at a time, and signing in to
+//! line6.com. Network work runs on threads so the window never waits; one client carries the
+//! site's cookies for both.
 
-use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use egui::{CornerRadius, Frame, Margin, RichText, Sense, Stroke, StrokeKind, Ui, vec2};
-use nx_customtone::{BrowsePage, Query, Sort};
+use nx_customtone::{Account, BrowsePage, Client, Query, Sort};
 
 use crate::theme;
 use crate::view::{card, chip, dot, mono};
 
+enum Reply {
+    Page(Result<(BrowsePage, Account), String>),
+    SignedIn { user: String, outcome: Result<Account, String> },
+    SignedOut,
+}
+
+/// The sign-in form while it is open.
 #[derive(Default)]
+struct SignInForm {
+    user: String,
+    password: String,
+    remember: bool,
+}
+
 pub struct CustomToneView {
+    client: Arc<Client>,
+    replies: (Sender<Reply>, Receiver<Reply>),
+    busy: usize,
     query: Query,
     search: String,
     page: Option<BrowsePage>,
-    pending: Option<Receiver<Result<BrowsePage, String>>>,
+    account: Account,
+    user: Option<String>,
+    form: Option<SignInForm>,
     error: Option<String>,
     open: Option<u64>,
+    started: bool,
+}
+
+impl Default for CustomToneView {
+    fn default() -> Self {
+        Self {
+            client: Arc::new(Client::default()),
+            replies: mpsc::channel(),
+            busy: 0,
+            query: Query::default(),
+            search: String::new(),
+            page: None,
+            account: Account::SignedOut,
+            user: None,
+            form: None,
+            error: None,
+            open: None,
+            started: false,
+        }
+    }
 }
 
 impl CustomToneView {
-    fn fetch(&mut self, ctx: &egui::Context) {
-        let (tx, rx) = mpsc::channel();
-        let query = self.query.clone();
-        let ctx = ctx.clone();
+    fn spawn(&mut self, ctx: &egui::Context, work: impl FnOnce(&Client) -> Reply + Send + 'static) {
+        let (client, tx, ctx) = (self.client.clone(), self.replies.0.clone(), ctx.clone());
         std::thread::spawn(move || {
-            _ = tx.send(nx_customtone::fetch(&query).map_err(|e| e.to_string()));
+            _ = tx.send(work(&client));
             ctx.request_repaint();
         });
-        self.pending = Some(rx);
+        self.busy += 1;
         self.error = None;
     }
 
-    fn take_result(&mut self) {
-        let Some(result) = self.pending.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
-        self.pending = None;
-        match result {
-            Ok(page) => {
-                self.query.page = page.page;
-                self.page = Some(page);
-                self.open = None;
+    fn fetch(&mut self, ctx: &egui::Context) {
+        let query = self.query.clone();
+        self.spawn(ctx, move |client| Reply::Page(client.browse(&query).map_err(|e| e.to_string())));
+    }
+
+    fn sign_in(&mut self, ctx: &egui::Context, user: String, password: String, remember: bool) {
+        self.spawn(ctx, move |client| {
+            let outcome = client.sign_in(&user, &password).map_err(|e| e.to_string());
+            let outcome = match outcome {
+                Ok(account) if remember => crate::account::remember(&user, &password).map(|()| account),
+                other => other,
+            };
+            Reply::SignedIn { user, outcome }
+        });
+    }
+
+    fn take_replies(&mut self, ctx: &egui::Context) {
+        let replies: Vec<Reply> = self.replies.1.try_iter().collect();
+        for reply in replies {
+            self.busy = self.busy.saturating_sub(1);
+            match reply {
+                Reply::Page(Ok((page, account))) => {
+                    self.query.page = page.page;
+                    self.page = Some(page);
+                    self.account = account;
+                    self.open = None;
+                }
+                Reply::SignedIn { user, outcome: Ok(account) } => {
+                    self.account = account;
+                    self.user = Some(user);
+                    self.form = None;
+                    self.fetch(ctx);
+                }
+                Reply::SignedOut => {
+                    self.account = Account::SignedOut;
+                    self.user = None;
+                }
+                Reply::Page(Err(e)) | Reply::SignedIn { outcome: Err(e), .. } => self.error = Some(e),
             }
-            Err(e) => self.error = Some(e),
         }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        if self.page.is_none() && self.pending.is_none() && self.error.is_none() {
-            self.fetch(ui.ctx());
+        if !self.started {
+            self.started = true;
+            match crate::account::remembered() {
+                Some((user, password)) => self.sign_in(ui.ctx(), user, password, false),
+                None => self.fetch(ui.ctx()),
+            }
         }
-        self.take_result();
+        self.take_replies(ui.ctx());
         card(ui, |ui| {
             self.toolbar(ui);
             ui.add_space(6.0);
-            ui.label(
-                RichText::new("Downloading needs an HX Stomp registered on your Line 6 account; until then nx-edit can only list tones.")
-                    .font(theme::regular(12.0))
-                    .color(theme::TEXT_DIM),
-            );
+            self.account_line(ui);
+            if self.form.is_some() {
+                self.sign_in_form(ui);
+            }
             ui.add_space(10.0);
             if let Some(error) = &self.error {
                 ui.label(RichText::new(error).color(theme::ACCENT));
             }
-            if self.pending.is_some() {
+            if self.busy > 0 {
                 ui.label(RichText::new("Loading…").color(theme::TEXT_DIM));
             }
             self.list(ui);
         });
     }
+
+    fn account_line(&mut self, ui: &mut Ui) {
+        ui.horizontal_wrapped(|ui| {
+            let (color, text) = match (&self.account, &self.user) {
+                (Account::SignedIn { can_download: true }, user) => (theme::GREEN, format!("Signed in{}", as_user(user))),
+                (Account::SignedIn { can_download: false }, user) => (
+                    theme::ACCENT,
+                    format!("Signed in{} · downloading needs an HX Stomp registered on this account", as_user(user)),
+                ),
+                (Account::SignedOut, _) => (theme::ARM_OFF, "Not signed in · listing only".to_owned()),
+            };
+            dot(ui, color, 8.0);
+            ui.label(RichText::new(text).font(theme::regular(12.0)).color(theme::TEXT_DIM));
+            let signed_in = matches!(self.account, Account::SignedIn { .. });
+            if !signed_in && self.form.is_none() && ui.small_button("Sign in").clicked() {
+                self.form = Some(SignInForm { remember: true, ..Default::default() });
+            }
+            if signed_in && ui.small_button("Sign out").clicked() {
+                _ = crate::account::forget();
+                self.spawn(ui.ctx(), |client| {
+                    _ = client.sign_out();
+                    Reply::SignedOut
+                });
+            }
+        });
+    }
+
+    fn sign_in_form(&mut self, ui: &mut Ui) {
+        let Some(form) = self.form.as_mut() else { return };
+        let mut submit = None;
+        let mut cancel = false;
+        ui.add_space(8.0);
+        Frame::new().fill(theme::RAISED).corner_radius(CornerRadius::same(14)).inner_margin(Margin::same(14)).show(ui, |ui| {
+            ui.label(RichText::new("Sign in to line6.com").font(theme::semibold(14.0)));
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
+                ui.add(egui::TextEdit::singleline(&mut form.user).hint_text("E-mail or user name").desired_width(220.0));
+                let password = ui.add(egui::TextEdit::singleline(&mut form.password).password(true).hint_text("Password").desired_width(180.0));
+                ui.checkbox(&mut form.remember, "Remember (Secret Service)");
+                let enter = password.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let ready = !form.user.trim().is_empty() && !form.password.is_empty();
+                if (ui.add_enabled(ready, egui::Button::new("Sign in")).clicked() || enter) && ready {
+                    submit = Some((form.user.trim().to_owned(), form.password.clone(), form.remember));
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if cancel {
+            self.form = None;
+        } else if let Some((user, password, remember)) = submit {
+            if let Some(form) = self.form.as_mut() {
+                form.password.clear();
+            }
+            self.sign_in(ui.ctx(), user, password, remember);
+        }
+    }
+
 
     fn toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
@@ -97,7 +227,7 @@ impl CustomToneView {
             if let Some(page) = &self.page {
                 let (current, pages) = (page.page, page.pages);
                 ui.label(RichText::new(format!("{} tones · page {current} of {pages}", page.total)).font(theme::regular(12.0)).color(theme::TEXT_DIM));
-                let busy = self.pending.is_some();
+                let busy = self.busy > 0;
                 if ui.add_enabled(!busy && current > 1, egui::Button::new("Previous")).clicked() {
                     self.query.page = current - 1;
                     self.fetch(ui.ctx());
@@ -172,4 +302,8 @@ impl CustomToneView {
             self.open = if self.open == Some(id) { None } else { Some(id) };
         }
     }
+}
+
+fn as_user(user: &Option<String>) -> String {
+    user.as_ref().map_or_else(String::new, |u| format!(" as {u}"))
 }

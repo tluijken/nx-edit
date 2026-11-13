@@ -20,6 +20,7 @@ rmpv = "1"
 nx-session = { path = "../nx-session" }
 nx-usb = { path = "../nx-usb" }
 nx-customtone = { path = "../nx-customtone" }
+keyring = { version = "4.2.0", default-features = false, features = ["v1", "zbus-secret-service-keyring-store"] }
 
 [dev-dependencies]
 nx-session = { path = "../nx-session", features = ["fake"] }
