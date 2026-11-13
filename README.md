@@ -5,7 +5,7 @@ speaks the pedal's USB protocol directly. Line 6 never published that protocol; 
 from USB captures of HX Edit and static analysis of its Windows binary, with tonepush's protocol
 notes as a starting map (see [docs/protocol.md](docs/protocol.md)).
 
-![nx-edit](docs/nx-edit-customtone.png)
+![nx-edit](docs/nx-edit-design.png)
 
 Tested against an HX Stomp on firmware 3.71, with HX Edit 3.82 as the reference.
 
