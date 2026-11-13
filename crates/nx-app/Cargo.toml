@@ -23,4 +23,5 @@ nx-customtone = { path = "../nx-customtone" }
 keyring = { version = "4.2.0", default-features = false, features = ["v1", "zbus-secret-service-keyring-store"] }
 
 [dev-dependencies]
+egui_kittest = { version = "0.37", features = ["eframe"] }
 nx-session = { path = "../nx-session", features = ["fake"] }

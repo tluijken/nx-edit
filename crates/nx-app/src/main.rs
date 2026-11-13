@@ -82,15 +82,7 @@ fn main() -> eframe::Result {
             }
         }
     });
-    let preset = from_pedal.or_else(|| preset_path.as_ref().and_then(|path| {
-        match std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| nx_hlx::Preset::from_slice(&b).map_err(|e| e.to_string())) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                status.push(format!("{}: {e}", path.display()));
-                None
-            }
-        }
-    }));
+    let preset = from_pedal;
     let catalog = match nx_catalog::Catalog::load(&res_dir) {
         Ok(c) => Some(c),
         Err(e) => {
@@ -114,7 +106,11 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
-            Ok(Box::new(view::EditorApp::new(preset, catalog, status.join(" · "), connection)))
+            let mut app = view::EditorApp::new(preset, catalog, status.join(" · "), connection);
+            if let Some(path) = preset_path {
+                app.open_file(path);
+            }
+            Ok(Box::new(app))
         }),
     )
 }

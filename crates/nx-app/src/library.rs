@@ -80,6 +80,18 @@ pub fn rename(file: &Path, name: &str) -> Result<(), String> {
     std::fs::write(file, preset.to_vec_pretty()).map_err(|e| format!("{}: {e}", file.display()))
 }
 
+/// Writes an edited preset over its file. The new content goes to a file beside it first and then
+/// takes its place, so a failed write never leaves half a preset.
+pub fn save(file: &Path, preset: &nx_hlx::Preset) -> Result<(), String> {
+    let name = file.file_name().ok_or_else(|| format!("{}: not a file", file.display()))?;
+    let partial = file.with_file_name(format!(".{}.saving", name.to_string_lossy()));
+    std::fs::write(&partial, preset.to_vec_pretty()).map_err(|e| format!("{}: {e}", file.display()))?;
+    std::fs::rename(&partial, file).map_err(|e| {
+        _ = std::fs::remove_file(&partial);
+        format!("{}: {e}", file.display())
+    })
+}
+
 /// Keeps a CustomTone download in the library's `customtone` folder, under the name the site gave
 /// it with path separators replaced. Only HX Stomp presets are kept.
 pub fn save_download(library: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
@@ -196,6 +208,28 @@ mod tests {
         assert_eq!(scan(&dir).entries[0].name, "Revv Live");
         assert!(rename(&dir.join("mine/Revv_DM.hlx"), "   ").is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saving_writes_the_edited_preset_over_its_file_and_leaves_nothing_else() {
+        let dir = library_with("save", &[("mine/Revv_DM.hlx", fixture("Revv_DM.hlx"))]);
+        let file = dir.join("mine/Revv_DM.hlx");
+        let mut preset = nx_hlx::Preset::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+        preset.set_param("block2", "Drive", serde_json::json!(0.7));
+        save(&file, &preset).unwrap();
+        let reread = nx_hlx::Preset::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(reread, preset);
+        let files: Vec<_> = std::fs::read_dir(dir.join("mine")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(files, ["Revv_DM.hlx"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saving_into_a_missing_folder_fails_without_creating_it() {
+        let dir = library_with("save-missing", &[]);
+        let preset = nx_hlx::Preset::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+        assert!(save(&dir.join("gone/Revv_DM.hlx"), &preset).is_err());
+        assert!(!dir.join("gone").exists());
     }
 
     #[test]

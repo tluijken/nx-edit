@@ -81,6 +81,22 @@ pub struct EditorApp {
     pedal_preset: Option<Preset>,
     screen: Screen,
     customtone: crate::customtone::CustomToneView,
+    /// Edits to the library file shown that are not written to it yet.
+    unsaved: bool,
+    /// Where to go once the unsaved edits are saved or discarded, while that is asked.
+    leaving: Option<Leave>,
+    /// The window may close: the unsaved edits were saved or discarded.
+    closing: bool,
+}
+
+/// Leaving a library file with unsaved edits, for another file, the pedal's preset, another
+/// preset on the pedal, or quitting.
+#[derive(Clone)]
+enum Leave {
+    Open(std::path::PathBuf),
+    Pedal,
+    Select(u64),
+    Quit,
 }
 
 impl EditorApp {
@@ -108,10 +124,15 @@ impl EditorApp {
             pedal_preset: None,
             screen: Screen::Editor,
             customtone: Default::default(),
+            unsaved: false,
+            leaving: None,
+            closing: false,
         }
     }
 
-    fn top_bar(&self, ui: &mut Ui) {
+    /// Draws the top bar; true when its Save button was clicked.
+    fn top_bar(&self, ui: &mut Ui) -> bool {
+        let mut save = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
             let (logo, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
@@ -136,6 +157,14 @@ impl EditorApp {
                         ui.label(RichText::new(format!("Snapshot {} · {name}", current + 1)).font(theme::semibold(13.0)));
                     });
                 }
+                if self.unsaved {
+                    let button = egui::Button::new(RichText::new("Save").font(theme::semibold(13.0)).color(theme::BG))
+                        .fill(theme::ACCENT)
+                        .corner_radius(CornerRadius::same(255))
+                        .min_size(vec2(72.0, 36.0));
+                    save = ui.add(button).on_hover_text("Write the changes to the library file (Ctrl+S)").clicked();
+                    ui.label(RichText::new("Unsaved changes").font(theme::regular(12.0)).color(theme::TEXT_DIM));
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 pill(ui, |ui| {
@@ -144,6 +173,7 @@ impl EditorApp {
                 });
             });
         });
+        save
     }
 
     fn rail(&mut self, ui: &mut Ui) {
@@ -232,7 +262,7 @@ impl EditorApp {
                 if ui.interact(rect, ui.scope_id().with(("block", &tile.block_key)), Sense::click()).clicked() {
                     clicked = Some(ChainClick::Select(tile.block_key.clone()));
                 }
-                if self.live().is_some() {
+                if self.editable() {
                     let power = Rect::from_center_size(power_center(rect), vec2(28.0, 28.0));
                     let response = ui.interact(power, ui.scope_id().with(("power", &tile.block_key)), Sense::click());
                     if response.on_hover_text(if tile.enabled { "Bypass" } else { "Turn on" }).clicked() {
@@ -291,7 +321,8 @@ impl EditorApp {
         let model = self.catalog.as_ref().and_then(|c| c.model(&block.model)).cloned();
         let color = tile.as_ref().and_then(|t| t.category_color).map_or(theme::TEXT_MID, theme::from_rgb_u32);
         let address = self.live().and_then(|c| c.addresses.get(&key)).cloned();
-        let can_toggle = address.is_some();
+        let file = self.showing_file.is_some();
+        let can_toggle = address.is_some() || file;
         let mut toggle = false;
         let mut turned = None;
         card(ui, |ui| {
@@ -341,7 +372,7 @@ impl EditorApp {
                         let def = model.as_ref().and_then(|m| m.params.iter().find(|p| &p.id == name));
                         let current = value.as_f64().filter(|_| value.is_f64());
                         let live = match (def, current) {
-                            (Some(d), Some(v)) if address.as_ref().and_then(|a| a.param(name)).is_some() => dragged(v, d, 0.0).map(|_| (d, v)),
+                            (Some(d), Some(v)) if file || address.as_ref().and_then(|a| a.param(name)).is_some() => dragged(v, d, 0.0).map(|_| (d, v)),
                             _ => None,
                         };
                         let label = def.map_or(name.as_str(), |d| d.name.as_str());
@@ -376,10 +407,15 @@ impl EditorApp {
         self.set_param(&key, &name, value);
     }
 
-    /// Sets a parameter of the pedal's preset, on screen and on the pedal.
+    /// Sets a parameter of the preset shown: on the pedal too for the pedal's preset, until saved
+    /// for a library file.
     fn set_param(&mut self, key: &str, name: &str, value: f64) {
         if let Some(preset) = self.preset.as_mut() {
             preset.set_param(key, name, serde_json::json!(value));
+        }
+        if self.showing_file.is_some() {
+            self.unsaved = true;
+            return;
         }
         if let Some(connection) = self.live()
             && let Some(address) = connection.addresses.get(key)
@@ -389,11 +425,14 @@ impl EditorApp {
         }
     }
 
-    /// Ctrl+Z takes the last knob turn back, Ctrl+Shift+Z or Ctrl+Y makes it again; only on the
-    /// pedal's preset and while no text field has the keyboard.
-    fn undo_keys(&mut self, ctx: &egui::Context) {
-        if self.live().is_none() || ctx.memory(|m| m.focused().is_some()) {
+    /// Ctrl+Z takes the last knob turn back, Ctrl+Shift+Z or Ctrl+Y makes it again, Ctrl+S saves a
+    /// library file; only while no text field has the keyboard.
+    fn edit_keys(&mut self, ctx: &egui::Context) {
+        if !self.editable() || self.leaving.is_some() || ctx.memory(|m| m.focused().is_some()) {
             return;
+        }
+        if self.unsaved && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
+            self.save_file();
         }
         let (undo, redo) = ctx.input(|i| {
             let z = i.modifiers.command && i.key_pressed(egui::Key::Z);
@@ -452,14 +491,101 @@ impl EditorApp {
                 }
             }
         });
+        match pick {
+            Some((_, true)) => self.leave(Leave::Pedal),
+            Some((index, false)) if self.showing_file.is_some() => self.leave(Leave::Select(index)),
+            Some((index, false)) => self.select_preset(index),
+            None => {}
+        }
+    }
+
+    fn select_preset(&mut self, index: u64) {
         let running = self.connection.as_ref().is_some_and(|c| c.live.running());
-        match (pick, self.connection.as_mut().filter(|_| running)) {
-            (Some((_, true)), _) => self.show_pedal(),
-            (Some((index, false)), Some(connection)) => {
-                connection.live.select(0, index);
-                // Knobs stay read-only until the pedal reports the new preset and it is shown.
-                connection.addresses.clear();
-                self.status = format!("Switching to {}…", nx_proto::slot_label(index));
+        let Some(connection) = self.connection.as_mut().filter(|_| running) else { return };
+        connection.live.select(0, index);
+        // Knobs stay read-only until the pedal reports the new preset and it is shown.
+        connection.addresses.clear();
+        self.status = format!("Switching to {}…", nx_proto::slot_label(index));
+    }
+
+    /// Goes elsewhere, first asking what to do with unsaved edits to the library file shown.
+    fn leave(&mut self, to: Leave) {
+        if self.unsaved {
+            self.leaving = Some(to);
+        } else {
+            self.go(to);
+        }
+    }
+
+    fn go(&mut self, to: Leave) {
+        self.unsaved = false;
+        match to {
+            Leave::Open(path) => self.open_file(path),
+            Leave::Pedal => self.show_pedal(),
+            Leave::Select(index) => {
+                self.show_pedal();
+                self.select_preset(index);
+            }
+            Leave::Quit => self.closing = true,
+        }
+    }
+
+    /// Writes the library file shown; false, with the reason in the status, when that failed.
+    fn save_file(&mut self) -> bool {
+        let (Some(path), Some(preset)) = (&self.showing_file, &self.preset) else { return false };
+        match crate::library::save(path, preset) {
+            Ok(()) => {
+                self.status = format!("Saved {}", preset.name());
+                self.unsaved = false;
+                self.rescan();
+                true
+            }
+            Err(e) => {
+                self.status = format!("Not saved: {e}");
+                false
+            }
+        }
+    }
+
+    /// Asks whether to save the library file's edits before going on.
+    fn leave_modal(&mut self, ctx: &egui::Context) {
+        let Some(to) = self.leaving.clone() else { return };
+        let name = self.preset.as_ref().map_or_else(String::new, |p| p.name().to_owned());
+        let mut choice = None;
+        let frame = Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(18)).inner_margin(Margin::same(24));
+        let modal = egui::Modal::new(egui::Id::unique("unsaved-changes")).frame(frame).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.spacing_mut().item_spacing.y = 12.0;
+            ui.label(RichText::new(format!("Save the changes to {name}?")).font(theme::semibold(20.0)));
+            ui.label(RichText::new("They are only in nx-edit; the library file still has the old version.").font(theme::regular(13.0)).color(theme::TEXT_DIM));
+            ui.horizontal(|ui| {
+                let button = |text: &str, primary: bool| {
+                    let label = RichText::new(text).font(theme::semibold(15.0));
+                    let button = if primary { egui::Button::new(label.color(theme::BG)).fill(theme::ACCENT) } else { egui::Button::new(label) };
+                    button.corner_radius(CornerRadius::same(255)).min_size(vec2(100.0, 40.0))
+                };
+                if ui.add(button("Save and continue", true)).clicked() {
+                    choice = Some(true);
+                }
+                if ui.add(button("Discard", false)).clicked() {
+                    choice = Some(false);
+                }
+                if ui.add(button("Cancel", false)).clicked() {
+                    self.leaving = None;
+                }
+            });
+        });
+        if modal.should_close() {
+            self.leaving = None;
+        }
+        match choice {
+            Some(true) if self.save_file() => {
+                self.leaving = None;
+                self.go(to);
+            }
+            Some(false) => {
+                self.leaving = None;
+                self.go(to);
             }
             _ => {}
         }
@@ -535,21 +661,35 @@ impl EditorApp {
         if !self.library.skipped.is_empty() {
             ui.label(RichText::new(format!("{} files could not be read", self.library.skipped.len())).font(theme::regular(12.0)).color(theme::TEXT_DIM));
         }
+        let shown = |path: &std::path::PathBuf| self.showing_file.as_ref() == Some(path);
         match action {
-            Some(LibraryAction::Open(path)) => self.open_file(path),
+            Some(LibraryAction::Open(path)) => self.leave(Leave::Open(path)),
             Some(LibraryAction::StartRename(path, name)) => self.renaming = Some((path, name)),
             Some(LibraryAction::CancelRename) => self.renaming = None,
             Some(LibraryAction::Rename(path, name)) => {
+                let is_shown = shown(&path);
                 match crate::library::rename(&path, &name) {
-                    Ok(()) => self.status = format!("Renamed to {}", name.trim()),
+                    Ok(()) => {
+                        self.status = format!("Renamed to {}", name.trim());
+                        // Unsaved edits keep the new name when they are saved later.
+                        if let Some(preset) = self.preset.as_mut().filter(|_| is_shown) {
+                            preset.set_name(name.trim());
+                        }
+                    }
                     Err(e) => self.status = e,
                 }
                 self.renaming = None;
                 self.rescan();
             }
             Some(LibraryAction::Trash(path)) => {
+                let is_shown = shown(&path);
                 match crate::library::trash(&dir, &path) {
-                    Ok(kept) => self.status = format!("Moved to {}", kept.display()),
+                    Ok(kept) => {
+                        if is_shown {
+                            self.close_file();
+                        }
+                        self.status = format!("Moved to {}", kept.display());
+                    }
                     Err(e) => self.status = e,
                 }
                 self.rescan();
@@ -585,7 +725,7 @@ impl EditorApp {
         self.screen = Screen::Editor;
     }
 
-    fn open_file(&mut self, path: std::path::PathBuf) {
+    pub fn open_file(&mut self, path: std::path::PathBuf) {
         match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| Preset::from_slice(&b).map_err(|e| e.to_string())) {
             Ok(preset) => {
                 if self.showing_file.is_none() && self.connection.is_some() {
@@ -600,6 +740,8 @@ impl EditorApp {
                 self.preset = Some(preset);
                 self.showing_file = Some(path);
                 self.drag = None;
+                self.unsaved = false;
+                self.history.clear();
             }
             Err(e) => self.status = format!("{}: {e}", path.display()),
         }
@@ -612,7 +754,22 @@ impl EditorApp {
         self.preset = Some(preset);
         self.showing_file = None;
         self.drag = None;
+        self.history.clear();
         self.status = "Connected · changes not saved".to_owned();
+    }
+
+    /// Stops showing a library file that is gone, for the pedal's preset when there is one.
+    fn close_file(&mut self) {
+        self.unsaved = false;
+        if self.pedal_preset.is_some() {
+            self.show_pedal();
+            return;
+        }
+        self.preset = None;
+        self.showing_file = None;
+        self.selected_block = None;
+        self.drag = None;
+        self.history.clear();
     }
 
     /// The connection, when what is shown is the pedal's preset and its worker still runs; a
@@ -621,8 +778,21 @@ impl EditorApp {
         self.connection.as_ref().filter(|c| self.showing_file.is_none() && c.live.running())
     }
 
+    /// Whether knobs, block switches and snapshots of what is shown can be changed: a library file
+    /// always, the pedal's preset while connected.
+    fn editable(&self) -> bool {
+        self.showing_file.is_some() || self.live().is_some()
+    }
+
     fn toggle_block(&mut self, key: &str) {
         let Some(block) = self.preset.as_ref().and_then(|p| p.blocks().into_iter().find(|b| b.key == key)) else { return };
+        if self.showing_file.is_some() {
+            if let Some(preset) = self.preset.as_mut() {
+                preset.set_enabled(key, !block.enabled);
+            }
+            self.unsaved = true;
+            return;
+        }
         let Some(connection) = self.live() else { return };
         let Some(slot) = connection.addresses.get(key).map(|a| a.slot) else { return };
         connection.live.set_enabled(connection.generation, slot, !block.enabled);
@@ -631,7 +801,15 @@ impl EditorApp {
         }
     }
 
+    /// Shows another snapshot. In a library file this alone does not count as an unsaved edit; the
+    /// snapshot shown is written along with the next save.
     fn select_snapshot(&mut self, index: usize) {
+        if self.showing_file.is_some() {
+            if let Some(preset) = self.preset.as_mut() {
+                preset.select_snapshot(index);
+            }
+            return;
+        }
         let Some(connection) = self.live() else { return };
         connection.live.select_snapshot(index as u64);
         if let Some(preset) = self.preset.as_mut() {
@@ -667,9 +845,9 @@ impl EditorApp {
 
     /// Shows the preset the pedal holds after a switch, by a click here or a footswitch, or after a
     /// snapshot or block change, which keeps the selected block. While a library file is shown, only
-    /// the kept pedal preset is updated. A preset nx-edit cannot show leaves the knobs read-only.
+    /// the kept pedal preset is updated, so a footswitch never throws away edits to the file. A
+    /// preset nx-edit cannot show leaves the knobs read-only.
     fn apply_loaded(&mut self, loaded: Loaded) {
-        self.history.clear();
         let Some(connection) = self.connection.as_mut() else { return };
         let Loaded { generation, preset: loaded } = loaded;
         let same_preset = loaded.index.is_some() && loaded.index == connection.current;
@@ -688,10 +866,11 @@ impl EditorApp {
         if let Some(entry) = connection.presets.iter_mut().find(|p| Some(p.index) == loaded.index) {
             entry.name = loaded.name.clone();
         }
-        if self.showing_file.is_some() && same_preset {
+        if self.showing_file.is_some() {
             self.pedal_preset = Some(hlx);
             return;
         }
+        self.history.clear();
         let keep = same_preset && self.selected_block.as_ref().is_some_and(|k| hlx.blocks().iter().any(|b| &b.key == k));
         if !keep {
             self.selected_block = hlx.blocks().first().map(|b| b.key.clone());
@@ -704,7 +883,7 @@ impl EditorApp {
     }
 
     fn snapshots(&mut self, ui: &mut Ui) {
-        let live = self.live().is_some();
+        let live = self.editable();
         let Some(preset) = &self.preset else { return };
         let current = preset.current_snapshot();
         let mut pick = None;
@@ -1036,14 +1215,27 @@ impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.take_updates();
         self.take_dropped_files(ui.ctx());
-        self.undo_keys(ui.ctx());
+        self.edit_keys(ui.ctx());
+        let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.viewport().close_requested()) && self.unsaved && !self.closing {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.leaving = Some(Leave::Quit);
+        }
+        self.leave_modal(&ctx);
+        if self.closing {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         if let Some(connection) = &self.connection {
             if let Some(error) = connection.live.errors().pop() {
                 self.status = format!("HX Stomp: {error}");
             }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
-        egui::Panel::top("top").frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| self.top_bar(ui));
+        egui::Panel::top("top").frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| {
+            if self.top_bar(ui) {
+                self.save_file();
+            }
+        });
         egui::Panel::left("rail")
             .exact_size(76.0)
             .show_separator_line(false)
@@ -1078,5 +1270,164 @@ impl eframe::App for EditorApp {
                 });
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+
+    fn library_file(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nx-view-{}-{test}", std::process::id()));
+        _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["Revv_DM.hlx", "Mark_Lead.hlx"] {
+            std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-hlx/tests/fixtures").join(name), dir.join(name)).unwrap();
+        }
+        dir.join("Revv_DM.hlx")
+    }
+
+    fn editor_on(file: &Path) -> Harness<'static, EditorApp> {
+        let file = file.to_path_buf();
+        let mut harness = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |cc| {
+            theme::install(&cc.egui_ctx);
+            let mut app = EditorApp::new(None, None, String::new(), None);
+            app.open_file(file);
+            app
+        });
+        harness.run();
+        harness
+    }
+
+    fn drive_on_disk(file: &Path) -> serde_json::Value {
+        let preset = Preset::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        preset.blocks().into_iter().find(|b| b.key == "block2").unwrap().params.into_iter().find(|(k, _)| k == "Drive").unwrap().1
+    }
+
+    #[test]
+    fn a_library_file_is_edited_and_saved_with_the_save_button() {
+        let file = library_file("save-button");
+        let mut harness = editor_on(&file);
+        assert!(harness.query_by_label("Save").is_none());
+        harness.state_mut().set_param("block2", "Drive", 0.7);
+        harness.run();
+        harness.get_by_label("Save").click();
+        harness.run();
+        assert_eq!(drive_on_disk(&file), serde_json::json!(0.7));
+        assert!(!harness.state().unsaved);
+        assert!(harness.query_by_label("Save").is_none());
+    }
+
+    #[test]
+    fn ctrl_s_saves_a_library_file() {
+        let file = library_file("ctrl-s");
+        let mut harness = editor_on(&file);
+        harness.state_mut().toggle_block("block2");
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+        harness.run();
+        let saved = Preset::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert!(!saved.blocks().into_iter().find(|b| b.key == "block2").unwrap().enabled);
+    }
+
+    #[test]
+    fn opening_another_file_asks_first_and_discard_keeps_the_old_file() {
+        let file = library_file("discard");
+        let before = std::fs::read(&file).unwrap();
+        let mut harness = editor_on(&file);
+        harness.state_mut().set_param("block2", "Drive", 0.7);
+        harness.state_mut().leave(Leave::Open(file.with_file_name("Mark_Lead.hlx")));
+        harness.run();
+        assert_eq!(harness.state().preset.as_ref().unwrap().name(), "Revv DM");
+        harness.get_by_label("Discard").click();
+        harness.run();
+        assert_eq!(harness.state().preset.as_ref().unwrap().name(), "Mark Lead");
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+    }
+
+    #[test]
+    fn cancel_stays_on_the_file_with_its_edits() {
+        let file = library_file("cancel");
+        let mut harness = editor_on(&file);
+        harness.state_mut().set_param("block2", "Drive", 0.7);
+        harness.state_mut().leave(Leave::Open(file.with_file_name("Mark_Lead.hlx")));
+        harness.run();
+        harness.get_by_label("Cancel").click();
+        harness.run();
+        assert!(harness.state().leaving.is_none() && harness.state().unsaved);
+        assert_eq!(harness.state().showing_file.as_deref(), Some(file.as_path()));
+    }
+
+    #[test]
+    fn saving_from_the_question_writes_before_moving_on() {
+        let file = library_file("save-then-open");
+        let mut harness = editor_on(&file);
+        harness.state_mut().set_param("block2", "Drive", 0.7);
+        harness.state_mut().leave(Leave::Open(file.with_file_name("Mark_Lead.hlx")));
+        harness.run();
+        harness.get_by_label("Save and continue").click();
+        harness.run();
+        assert_eq!(drive_on_disk(&file), serde_json::json!(0.7));
+        assert_eq!(harness.state().preset.as_ref().unwrap().name(), "Mark Lead");
+    }
+
+    #[test]
+    fn undo_takes_back_a_knob_turn_on_a_library_file() {
+        let file = library_file("undo");
+        let mut harness = editor_on(&file);
+        let start = drive_on_disk(&file).as_f64().unwrap();
+        harness.state_mut().history.push(Turn { block: "block2".into(), param: "Drive".into(), before: start, after: 0.7 });
+        harness.state_mut().set_param("block2", "Drive", 0.7);
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        harness.run();
+        let preset = harness.state().preset.clone().unwrap();
+        let drive = preset.blocks().into_iter().find(|b| b.key == "block2").unwrap().params.into_iter().find(|(k, _)| k == "Drive").unwrap().1;
+        assert_eq!(drive.as_f64(), Some(start));
+    }
+}
+
+#[cfg(test)]
+mod pedal_tests {
+    use std::path::PathBuf;
+
+    use nx_session::Session;
+    use nx_session::fake::FakeDevice;
+
+    use super::*;
+
+    fn connection() -> Option<(Connection, FakeDevice)> {
+        let dir = std::env::var_os("NX_HXEDIT_RES").map(PathBuf::from).unwrap_or_else(nx_catalog::default_res_dir);
+        let Ok(syms) = nx_catalog::ModelSymbols::load(&dir.join("Helix.sym")) else {
+            eprintln!("skipped: no Helix.sym in {} (set NX_HXEDIT_RES)", dir.display());
+            return None;
+        };
+        let device = FakeDevice::new();
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        Some((Connection { live, addresses: HashMap::new(), presets: Vec::new(), current: Some(0), generation: 0, syms }, device))
+    }
+
+    #[test]
+    fn a_preset_switch_on_the_pedal_keeps_the_library_file_and_its_edits() {
+        let Some((connection, _device)) = connection() else { return };
+        let dir = std::env::temp_dir().join(format!("nx-view-{}-footswitch", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Mark_Lead.hlx");
+        std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-hlx/tests/fixtures/Mark_Lead.hlx"), &file).unwrap();
+        let mut app = EditorApp::new(None, None, String::new(), Some(connection));
+        app.open_file(file.clone());
+        app.toggle_block("block0");
+        let capture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../captures/02-select-preset-01C.pcapng");
+        let switched = crate::device::preset_from_capture(&capture).unwrap();
+        app.apply_loaded(Loaded { generation: 1, preset: switched });
+        assert_eq!(app.showing_file.as_deref(), Some(file.as_path()));
+        assert!(app.unsaved);
+        assert_eq!(app.preset.as_ref().unwrap().name(), "Mark Lead");
+        assert_eq!(app.pedal_preset.as_ref().unwrap().name(), "Revv DM");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

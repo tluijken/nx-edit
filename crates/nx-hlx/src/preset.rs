@@ -112,18 +112,19 @@ impl Preset {
     }
 
     /// Replaces an existing model parameter of a block; false if the block or parameter is absent.
+    /// A value the current snapshot controls is kept in that snapshot too.
     pub fn set_param(&mut self, block_key: &str, name: &str, value: Value) -> bool {
         if name.starts_with('@') {
             return false;
         }
         let slot = self.raw.pointer_mut("/data/tone/dsp0").and_then(|d| d.get_mut(block_key)).and_then(|b| b.get_mut(name));
-        match slot {
-            Some(v) => {
-                *v = value;
-                true
-            }
-            None => false,
+        let Some(v) = slot else { return false };
+        *v = value.clone();
+        let snapshot = format!("/data/tone/snapshot{}/controllers/dsp0/{block_key}/{name}", self.current_snapshot());
+        if let Some(controlled) = self.raw.pointer_mut(&snapshot).and_then(Value::as_object_mut) {
+            controlled.insert("@value".into(), value);
         }
+        true
     }
 
     pub fn set_name(&mut self, name: &str) {
@@ -132,16 +133,40 @@ impl Preset {
         }
     }
 
-    /// Switches a block on or off; false if there is no such block.
+    /// Switches a block on or off, in the current snapshot as well; false if there is no such block.
     pub fn set_enabled(&mut self, block_key: &str, enabled: bool) -> bool {
         let block = self.raw.pointer_mut("/data/tone/dsp0").and_then(|d| d.get_mut(block_key)).and_then(Value::as_object_mut);
-        match block {
-            Some(block) => {
-                block.insert("@enabled".into(), Value::Bool(enabled));
-                true
-            }
-            None => false,
+        let Some(block) = block else { return false };
+        block.insert("@enabled".into(), Value::Bool(enabled));
+        let snapshot = format!("/data/tone/snapshot{}/blocks/dsp0", self.current_snapshot());
+        if let Some(states) = self.raw.pointer_mut(&snapshot).and_then(Value::as_object_mut)
+            && states.contains_key(block_key)
+        {
+            states.insert(block_key.into(), Value::Bool(enabled));
         }
+        true
+    }
+
+    /// Makes snapshot `index` current and loads what it keeps: which blocks are on and the values
+    /// it controls. False, and nothing changed, if the preset has no such snapshot.
+    pub fn select_snapshot(&mut self, index: usize) -> bool {
+        let Some(snapshot) = self.raw.pointer(&format!("/data/tone/snapshot{index}")).cloned() else { return false };
+        self.set_current_snapshot(index);
+        let Some(dsp0) = self.raw.pointer_mut("/data/tone/dsp0").and_then(Value::as_object_mut) else { return true };
+        for (key, on) in snapshot.pointer("/blocks/dsp0").and_then(Value::as_object).into_iter().flatten() {
+            if let (Some(block), Some(on)) = (dsp0.get_mut(key).and_then(Value::as_object_mut), on.as_bool()) {
+                block.insert("@enabled".into(), Value::Bool(on));
+            }
+        }
+        for (key, params) in snapshot.pointer("/controllers/dsp0").and_then(Value::as_object).into_iter().flatten() {
+            let Some(block) = dsp0.get_mut(key).and_then(Value::as_object_mut) else { continue };
+            for (name, controlled) in params.as_object().into_iter().flatten() {
+                if let (Some(value), Some(slot)) = (controlled.get("@value"), block.get_mut(name)) {
+                    *slot = value.clone();
+                }
+            }
+        }
+        true
     }
 
     pub fn set_current_snapshot(&mut self, index: usize) {
