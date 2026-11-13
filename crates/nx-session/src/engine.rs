@@ -19,6 +19,8 @@ const EVENT_DATA: u64 = 106;
 /// Announces completion of a deferred operation: `{102: txn, 103: status, 104: result}` [seen, 02].
 const DEFERRED_DONE: u64 = 20;
 const FIRST_TXN: u64 = 1000;
+/// Largest message accepted from the device; the preset document, the largest seen, is about 3 KB.
+const MAX_MESSAGE: usize = 1 << 20;
 
 pub(crate) type Reply = Sender<Result<Value, Error>>;
 
@@ -155,6 +157,12 @@ impl<T: Transport> Engine<T> {
                 for msg in messages {
                     self.on_message(channel, msg.body);
                 }
+                if let Some(len) = self.reassembler.pending(frame.src, frame.dst).filter(|n| *n > MAX_MESSAGE) {
+                    // Nothing the device sends comes near this; buffering it would only end in running out
+                    // of memory, and the stream is out of step anyway.
+                    self.reassembler.reset(frame.src, frame.dst);
+                    self.poison(format!("a message of {len} bytes announced on {channel:?}"));
+                }
                 if !self.running {
                     return Ok(());
                 }
@@ -245,9 +253,19 @@ impl<T: Transport> Engine<T> {
         self.subscribers.retain(|s| s.send(event.clone()).is_ok());
     }
 
-    fn wait_for(&mut self, what: &'static str, mut done: impl FnMut(&Self) -> bool) -> Result<(), Error> {
+    /// Pumps until `done`, for at most the handshake timeout. With `stop_if_poisoned` a poisoned
+    /// session ends the wait at once; closing a channel waits for its answer regardless.
+    fn wait_for(
+        &mut self,
+        what: &'static str,
+        stop_if_poisoned: bool,
+        mut done: impl FnMut(&Self) -> bool,
+    ) -> Result<(), Error> {
         let deadline = Instant::now() + self.config.handshake_timeout;
         while !done(self) {
+            if stop_if_poisoned && let Some(reason) = &self.poisoned {
+                return Err(Error::Poisoned(reason.clone()));
+            }
             let now = Instant::now();
             if now >= deadline {
                 return Err(Error::Timeout(what));
@@ -259,11 +277,15 @@ impl<T: Transport> Engine<T> {
 
     fn send_hello(&mut self, channel: Channel) -> Result<(), Error> {
         let Some(hello) = self.link(channel).hello(Instant::now()) else { return Err(Error::AlreadyOpen(channel)) };
-        self.stray[channel.index()] = false;
-        self.write(hello)?;
         let i = channel.index();
-        self.wait_for("HELLO", |e| e.links[i].state != LinkState::HelloSent || e.stray[i])?;
-        if self.links[channel.index()].state != LinkState::Hello {
+        self.stray[i] = false;
+        // What an earlier opening of the channel left half-received or unsent belongs to it.
+        self.reassembler.reset(channel.device_id(), channel.host_id());
+        self.outbox[i].clear();
+        self.ack_due[i] = None;
+        self.write(hello)?;
+        self.wait_for("HELLO", true, |e| e.links[i].state != LinkState::HelloSent || e.stray[i])?;
+        if self.links[i].state != LinkState::Hello {
             // A wedged device answers HELLO with bare acknowledgements carrying old sequence
             // numbers; only a power cycle helps [map].
             return Err(Error::Handshake { channel, reason: "device answered HELLO without a HELLO".into() });
@@ -279,7 +301,7 @@ impl<T: Transport> Engine<T> {
         let msg = message(service, &[service]);
         self.queue_bytes(channel, &msg);
         self.flush_outbox(channel)?;
-        self.wait_for("service open", |e| e.service_reply[i].is_some())?;
+        self.wait_for("service open", true, |e| e.service_reply[i].is_some())?;
         let reply = self.service_reply[i].as_deref().unwrap_or_default();
         if reply.first() != Some(&service) {
             return Err(Error::Handshake { channel, reason: format!("service {service} answered with {reply:02x?}") });
@@ -296,7 +318,7 @@ impl<T: Transport> Engine<T> {
     fn close_channel(&mut self, channel: Channel) -> Result<(), Error> {
         let close = self.link(channel).close(Instant::now());
         self.write(close)?;
-        self.wait_for("close", |e| e.links[channel.index()].state == LinkState::Closed)
+        self.wait_for("close", false, |e| e.links[channel.index()].state == LinkState::Closed)
     }
 
     /// Drops whatever an earlier client left queued in the device, so the HELLO replies are ours.
@@ -594,6 +616,19 @@ mod tests {
         device.ignore_hello(false);
         assert!(matches!(engine.handshake(), Err(Error::AlreadyOpen(_))));
         assert_eq!(device.hellos(), vec![0x1001]);
+    }
+
+    #[test]
+    fn a_reopened_channel_starts_a_fresh_message_stream() {
+        let device = FakeDevice::new();
+        let mut engine = Engine::new(device.transport(), config());
+        engine.handshake().unwrap();
+        // Half a message the device sent on control before the channel was closed.
+        let partial = Frame::channel(0x03ef, 0x1001, 9, FrameKind::Data, 0x200, &[0, 0, 2, 0, 100, 0, 0, 0, 0x81]);
+        engine.reassembler.push(&partial).unwrap();
+        engine.close_channel(Channel::Control).unwrap();
+        engine.send_hello(Channel::Control).unwrap();
+        engine.open_service(Channel::Control, 2).unwrap();
     }
 
     #[test]

@@ -337,7 +337,10 @@ is what the spec forbids, so after any reply or deferred timeout the session is 
 timed-out request reports `Timeout`, everything else pending and every later request fails at once
 with `Error::Poisoned`, unsent request bytes are dropped, and no request goes out on any channel
 again. The session keeps acknowledging and keep-aliving so the device is not left with unread
-data. The caller ends the session and connects again.
+data. The caller ends the session and connects again. The same holds when the device announces a message larger than
+1 MiB (the largest seen, the preset document, is about 3 KB): the stream is out of step, so the
+half message is discarded and the session poisoned rather than buffered without bound. Opening a
+channel (HELLO) starts its message streams afresh.
 
 ### Ending a session [seen, partly]
 

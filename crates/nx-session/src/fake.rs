@@ -206,6 +206,15 @@ impl FakeDevice {
         self.notify(20, map(vec![(102, Value::from(txn)), (103, Value::from(status)), (104, result)]));
     }
 
+    /// A data frame with these payload bytes, whatever they are.
+    pub fn send_payload(&self, channel: Channel, payload: &[u8]) {
+        let mut st = self.lock();
+        let f = st.frame(channel, FrameKind::Data, payload);
+        st.out.push_back((f.encode(), false));
+        drop(st);
+        self.changed();
+    }
+
     pub fn close_channel(&self, channel: Channel) {
         let mut st = self.lock();
         let f = st.frame(channel, FrameKind::Close, &[]);

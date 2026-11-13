@@ -55,6 +55,11 @@ impl Reassembler {
         Ok(out)
     }
 
+    /// Forgets whatever was buffered for a stream, e.g. when its channel is opened again.
+    pub fn reset(&mut self, src: u16, dst: u16) {
+        self.streams.remove(&(src, dst));
+    }
+
     /// Bytes of an unfinished message held for a stream; 0 when every message so far was complete.
     pub fn buffered(&self, src: u16, dst: u16) -> usize {
         self.streams.get(&(src, dst)).map_or(0, Vec::len)

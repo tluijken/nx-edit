@@ -392,3 +392,14 @@ fn notification_20_before_its_status_1_reply_still_completes_the_request() {
     assert!(started.elapsed() < config().reply_timeout);
     assert_eq!(session.request(Request::PresetInfo).unwrap(), Value::from("done"));
 }
+
+#[test]
+fn an_absurd_message_length_leaves_the_device_state_unknown() {
+    let device = FakeDevice::new();
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    // A message header announcing 2 GB.
+    device.send_payload(Channel::Rpc, &[0, 0, 6, 0, 0xff, 0xff, 0xff, 0x7f]);
+    thread::sleep(Duration::from_millis(30));
+    assert!(matches!(session.request(Request::PresetInfo), Err(Error::Poisoned(_))));
+    assert!(device.requests().is_empty());
+}
