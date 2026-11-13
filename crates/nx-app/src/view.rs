@@ -42,6 +42,13 @@ struct Drag {
     up: f32,
 }
 
+/// What the main area shows, picked in the rail.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Editor,
+    CustomTone,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Panel {
     Presets,
@@ -65,6 +72,8 @@ pub struct EditorApp {
     showing_file: Option<std::path::PathBuf>,
     /// The pedal's preset, kept while a library file is shown.
     pedal_preset: Option<Preset>,
+    screen: Screen,
+    customtone: crate::customtone::CustomToneView,
 }
 
 impl EditorApp {
@@ -88,6 +97,8 @@ impl EditorApp {
             library: crate::library::scan(&crate::library::default_dir()),
             showing_file: None,
             pedal_preset: None,
+            screen: Screen::Editor,
+            customtone: Default::default(),
         }
     }
 
@@ -123,6 +134,27 @@ impl EditorApp {
                     ui.label(RichText::new(&self.status).font(theme::regular(12.0)).color(theme::TEXT_DIM));
                 });
             });
+        });
+    }
+
+    fn rail(&mut self, ui: &mut Ui) {
+        Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(CARD_RADIUS)).inner_margin(Margin::symmetric(6, 8)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            for (screen, hint) in [(Screen::Editor, "Signal chain"), (Screen::CustomTone, "CustomTone")] {
+                let (rect, response) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::click());
+                let active = self.screen == screen;
+                if active {
+                    ui.painter().rect_filled(rect, CornerRadius::same(12), theme::RAISED_HI);
+                }
+                let color = if active { theme::ACCENT } else { theme::TEXT_DIM };
+                match screen {
+                    Screen::Editor => chain_icon(ui.painter(), rect.center(), color),
+                    Screen::CustomTone => cloud_icon(ui.painter(), rect.center(), color),
+                }
+                if response.on_hover_text(hint).clicked() {
+                    self.screen = screen;
+                }
+            }
         });
     }
 
@@ -565,7 +597,7 @@ impl Grid {
     }
 }
 
-fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+pub(crate) fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(CARD_RADIUS)).inner_margin(Margin::same(16)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         add(ui);
@@ -581,18 +613,18 @@ fn pill(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn chip(ui: &mut Ui, text: &str) {
+pub(crate) fn chip(ui: &mut Ui, text: &str) {
     Frame::new().fill(theme::RAISED).corner_radius(CornerRadius::same(255)).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
         ui.label(RichText::new(text).font(theme::regular(12.0)).color(theme::TEXT_DIM));
     });
 }
 
-fn dot(ui: &mut Ui, color: Color32, size: f32) {
+pub(crate) fn dot(ui: &mut Ui, color: Color32, size: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
     ui.painter().circle_filled(rect.center(), size / 2.0, color);
 }
 
-fn mono(size: f32) -> FontId {
+pub(crate) fn mono(size: f32) -> FontId {
     FontId::monospace(size)
 }
 
@@ -681,6 +713,28 @@ fn power_icon(painter: &egui::Painter, center: Pos2, color: Color32) {
     painter.line_segment([center - vec2(0.0, 7.0), center - vec2(0.0, 1.5)], stroke);
 }
 
+fn chain_icon(painter: &egui::Painter, center: Pos2, color: Color32) {
+    let stroke = Stroke::new(2.0, color);
+    for dx in [-7.0, 7.0] {
+        painter.rect_stroke(Rect::from_center_size(center + vec2(dx, 0.0), vec2(6.0, 6.0)), CornerRadius::same(2), stroke, StrokeKind::Middle);
+    }
+    painter.line_segment([center - vec2(4.0, 0.0), center + vec2(4.0, 0.0)], stroke);
+}
+
+fn cloud_icon(painter: &egui::Painter, center: Pos2, color: Color32) {
+    let stroke = Stroke::new(2.0, color);
+    let arc = |c: Pos2, r: f32, from: f32, to: f32| -> Vec<Pos2> {
+        (0..=16).map(|i| {
+            let a = (from + (to - from) * i as f32 / 16.0).to_radians();
+            c + vec2(a.cos(), a.sin()) * r
+        }).collect()
+    };
+    painter.add(Shape::line(arc(center + vec2(-4.0, 1.0), 5.0, 90.0, 270.0), stroke));
+    painter.add(Shape::line(arc(center + vec2(1.0, -1.0), 6.0, 190.0, 340.0), stroke));
+    painter.add(Shape::line(arc(center + vec2(5.5, 2.0), 4.0, 270.0, 450.0), stroke));
+    painter.line_segment([center + vec2(-4.0, 6.0), center + vec2(5.5, 6.0)], stroke);
+}
+
 fn pulse_icon(painter: &egui::Painter, center: Pos2, color: Color32) {
     let p = |x: f32, y: f32| center + vec2(x - 12.0, y - 12.0) * 0.85;
     let points = vec![p(2.0, 12.0), p(6.0, 12.0), p(8.0, 7.0), p(12.0, 17.0), p(15.0, 10.0), p(17.0, 12.0), p(22.0, 12.0)];
@@ -740,7 +794,17 @@ impl eframe::App for EditorApp {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
         egui::Panel::top("top").frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| self.top_bar(ui));
+        egui::Panel::left("rail")
+            .exact_size(76.0)
+            .show_separator_line(false)
+            .resizable(false)
+            .frame(Frame::new().fill(theme::BG).inner_margin(Margin { left: 10, right: 0, top: 10, bottom: 10 }))
+            .show(ui, |ui| self.rail(ui));
         egui::CentralPanel::default().frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| {
+            if self.screen == Screen::CustomTone {
+                self.customtone.show(ui);
+                return;
+            }
             let lanes = self.preset.as_ref().map(|p| lanes(p, self.catalog.as_ref())).unwrap_or_default();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = GAP;

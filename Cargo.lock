@@ -2160,6 +2160,7 @@ dependencies = [
  "egui",
  "nx-capture",
  "nx-catalog",
+ "nx-customtone",
  "nx-hlx",
  "nx-proto",
  "nx-session",
