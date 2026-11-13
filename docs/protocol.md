@@ -231,7 +231,11 @@ document is *written* to the device has not been captured.
 
 The setters never change what the device wrote: `set_param` keeps a value's type and encoding (an
 integer stays an integer of the same width, an f32 stays f32) and rejects a value that type cannot
-hold exactly, a boolean for a number or the other way round, with `DocError::Value`.
+hold exactly, a boolean for a number or the other way round, with `DocError::Value`. The other
+setters check against the document's own counts: the current snapshot must be one of its snapshots,
+the cursor one of its slots on path 0 or 1. A snapshot name must be printable ASCII (0x20-0x7e, so no
+NUL) of at most 15 bytes [inferred: neither HX Edit's resource files nor the captured documents state
+the limit, and the captures only hold names of up to four characters].
 
 Note: capture 03 ends with Drive **0.6** (`SetParam 119: 0.6`, and the document agrees), not about
 0.55 as `captures/README.md` estimates.

@@ -378,13 +378,13 @@ fn edits_reject_slots_that_have_no_such_value() {
 
 #[test]
 fn growing_a_value_moves_the_section_table() {
-    // A string that outgrows its fixstr form shifts every later section; the table must follow.
+    // A longer name shifts every later section; the table must follow.
     let bytes = document("02-select-preset-01C");
     let mut doc = Document::decode(&bytes).unwrap();
-    doc.set_snapshot_name(0, "a name of more than thirty-one bytes").unwrap();
+    doc.set_snapshot_name(0, "Lead Clean").unwrap();
     let grown = doc.encode().unwrap();
     let again = Document::decode(&grown).unwrap();
-    assert_eq!(again.preset().unwrap().snapshots.list[0].name, "a name of more than thirty-one bytes");
+    assert_eq!(again.preset().unwrap().snapshots.list[0].name, "Lead Clean");
     let delta = grown.len() as u32 - bytes.len() as u32;
     let before = Document::decode(&bytes).unwrap();
     for (old, new) in before.sections().unwrap().iter().zip(again.sections().unwrap()) {
@@ -501,4 +501,32 @@ fn sections_are_the_table_encode_writes() {
     let encoded = doc.encode().unwrap();
     let written: Vec<u32> = (0..12).map(|i| table_word(&encoded, i)).collect();
     assert_eq!(doc.sections().unwrap(), written);
+}
+
+#[test]
+fn edits_stay_within_the_documents_own_counts() {
+    let mut doc = Document::decode(&document("02-select-preset-01C")).unwrap();
+    let before = doc.clone();
+    assert!(doc.set_current_snapshot(3).is_err(), "Revv DM has three snapshots");
+    assert!(doc.set_cursor(20, 0).is_err(), "twenty slots");
+    assert!(doc.set_cursor(5, 2).is_err(), "paths 0 and 1");
+    assert!(doc.set_snapshot_name(3, "x").is_err());
+    assert_eq!(doc, before);
+    doc.set_current_snapshot(2).unwrap();
+    doc.set_cursor(19, 1).unwrap();
+}
+
+#[test]
+fn snapshot_names_are_short_printable_ascii() {
+    let mut doc = Document::decode(&document("02-select-preset-01C")).unwrap();
+    let before = doc.clone();
+    assert!(doc.set_snapshot_name(0, "a\0b").is_err());
+    assert!(doc.set_snapshot_name(0, "Crunch\u{e9}").is_err());
+    assert!(doc.set_snapshot_name(0, "tab\there").is_err());
+    assert!(doc.set_snapshot_name(0, "sixteen chars ok").is_err());
+    assert_eq!(doc, before);
+    doc.set_snapshot_name(0, "fifteen chars!!").unwrap();
+    doc.set_snapshot_name(1, "").unwrap();
+    let names: Vec<_> = doc.preset().unwrap().snapshots.list.iter().map(|s| s.name.clone()).collect();
+    assert_eq!(names, ["fifteen chars!!", "", "Lead"]);
 }

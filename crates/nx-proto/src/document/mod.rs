@@ -24,6 +24,10 @@ const MAGIC: &[u8] = b"l6-helix\0";
 const SECTION_KEYS: [i64; 9] = [0, 1, 3, 4, 2, 5, 6, 7, 10];
 const TABLE_WORDS: usize = 12;
 
+/// Longest snapshot name, without the NUL. Neither HX Edit's resources nor the captured documents
+/// state a limit; 15 is an assumption (see docs/protocol.md).
+pub const SNAPSHOT_NAME_MAX: usize = 15;
+
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum DocError {
     #[error("not a preset document (no \"l6-helix\" magic)")]
@@ -165,33 +169,57 @@ impl Document {
         Ok(())
     }
 
+    /// Selects `slot` of DSP 0 on `path` (0 or 1), as op 78 does.
     pub fn set_cursor(&mut self, slot: usize, path: usize) -> Result<(), DocError> {
-        let cursor = self.tone.get_mut(6).ok_or_else(|| shape("no cursor (key 6)"))?;
-        set_int(cursor, 98, slot as i64)?;
-        set_int(cursor, 26, path as i64)
+        let slots = self.tone.get(0).and_then(|d| d.get(22)).and_then(Item::as_array).map_or(0, <[Item]>::len);
+        if slot >= slots {
+            return Err(DocError::Value(format!("slot {slot}; the document has {slots}")));
+        }
+        if path > 1 {
+            return Err(DocError::Value(format!("path {path}; there are paths 0 and 1")));
+        }
+        let mut cursor = self.tone.get(6).ok_or_else(|| shape("no cursor (key 6)"))?.clone();
+        set_int(&mut cursor, 98, slot as i64)?;
+        set_int(&mut cursor, 26, path as i64)?;
+        *self.tone.get_mut(6).expect("read above") = cursor;
+        Ok(())
     }
 
     pub fn set_current_snapshot(&mut self, index: usize) -> Result<(), DocError> {
+        let count = self.snapshot_count();
+        if index >= count {
+            return Err(DocError::Value(format!("snapshot {index}; the document has {count}")));
+        }
         let snaps = self.tone.get_mut(10).ok_or_else(|| shape("no snapshots (key 10)"))?;
         set_int(snaps, 6, index as i64)
     }
 
+    /// Names snapshot `index`. Names are printable ASCII of at most [`SNAPSHOT_NAME_MAX`] bytes; the
+    /// document stores them with a trailing NUL.
     pub fn set_snapshot_name(&mut self, index: usize, name: &str) -> Result<(), DocError> {
+        if name.len() > SNAPSHOT_NAME_MAX {
+            return Err(DocError::Value(format!("snapshot name of {} bytes; at most {SNAPSHOT_NAME_MAX}", name.len())));
+        }
+        if !name.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+            return Err(DocError::Value(format!("snapshot name {name:?} is not printable ASCII")));
+        }
+        let count = self.snapshot_count();
         let snap = self
             .tone
             .get_mut(10)
             .and_then(|s| s.get_mut(10))
             .and_then(|l| l.index_mut(index))
-            .ok_or_else(|| shape(format!("no snapshot {index}")))?;
-        let slot = snap.get_mut(4).ok_or_else(|| shape("snapshot without a name"))?;
-        let form = match slot {
-            Item::Str(_, form) => *form,
-            _ => LenForm::Fix,
-        };
+            .ok_or_else(|| DocError::Value(format!("snapshot {index}; the document has {count}")))?;
+        let Some(Item::Str(_, form)) = snap.get(4) else { return Err(shape("snapshot name is not a string")) };
+        let form = *form;
         let mut bytes = name.as_bytes().to_vec();
         bytes.push(0);
-        *slot = Item::Str(bytes, form);
+        *snap.get_mut(4).expect("read above") = Item::Str(bytes, form);
         Ok(())
+    }
+
+    fn snapshot_count(&self) -> usize {
+        self.tone.get(10).and_then(|s| s.get(10)).and_then(Item::as_array).map_or(0, <[Item]>::len)
     }
 
     fn slot_body_mut(&mut self, slot: usize) -> Result<(i64, &mut Item), DocError> {
@@ -209,11 +237,13 @@ impl Document {
 
 fn set_int(map: &mut Item, key: i64, value: i64) -> Result<(), DocError> {
     let slot = map.get_mut(key).ok_or_else(|| shape(format!("no key {key}")))?;
-    *slot = match slot {
-        Item::Int(_, form) => Item::Int(value, *form),
-        _ => Item::int(value),
-    };
-    Ok(())
+    match slot {
+        Item::Int(_, form) if tree::fits(value, *form) => {
+            *slot = Item::Int(value, *form);
+            Ok(())
+        }
+        _ => Err(DocError::Value(format!("key {key} is {slot:?} and cannot hold {value}"))),
+    }
 }
 
 const KIND_INPUT: i64 = 0;
