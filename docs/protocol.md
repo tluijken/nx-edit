@@ -101,8 +101,23 @@ parameter and is 0].
 
 ## Notifications on 0x1002 [seen, partly]
 
-`{105: event, 106: data}`. Event 30 follows every set-parameter with the same arguments (`03`).
+`{105: event, 106: data}`; most events wrap their own data as `{82, 68, 121: subtype, 106: data}`.
 Notifications need ACK frames or the device stops sending them [map].
+
+| event | data | when | source |
+|---|---|---|---|
+| 4 | `{107: setlist, 108: index}` | the pedal has switched preset; HX Edit then reads op 23 and op 22 | 02 |
+| 8 | `{107, 108}` | a preset switch is under way, before 4 | 02 |
+| 20 | `{102: txn, 103: status, 104: result}` | a deferred operation completed | 02 |
+| 22 | `{118: id, 119: value}` | a global setting changed (16 tempo, 28, 19 seen) | 02, live-05 |
+| 23 | `{23: 0}` | after a snapshot switch; also six times while footswitches were pressed in snapshot mode | 05, live-06 |
+| 30 | `{98, 29, 26, 28, 119}` as op 30 | a parameter changed, by op 30 (an echo) or by a knob on the pedal | 03, live-05 |
+| 39 | `{98: slot, 26: sub}` | a block was selected, by op 78 or on the pedal | 04, live-05 |
+| 42 | `{92: index}` | a snapshot switch began | 05 |
+| 46 | `{92: index}` | a snapshot finished loading; HX Edit then reads op 23 and op 22 | 05 |
+| 49 | subtype 17 `{98, 59: enabled}`, 10 `{98}`, 47 nil | a block was switched on or off (17), its model changed (10, after 47) | 04, live-05 |
+
+nx-edit reads the preset again after 4, 46 and 49, and applies 30 to the knob in place.
 
 ## Preset document (op 22)
 
@@ -397,5 +412,7 @@ retried.
   (Drive, cab Distance), all accepted, and closed control and events as HX Edit does. Seen in the
   same captures, not understood: notification 22 `{118: 19, 119: true}` (global setting 19 became
   true; in the first session six seconds before nx-edit wrote anything) and notification 23
-  `{23: 0}`, six times while the pedal was being handled. Whether either relates is unknown; a
-  capture of HX Edit doing the same edits, followed by a footswitch check, would tell.
+  `{23: 0}`, six times while the pedal was being handled. Capture 05 shows 23 after every snapshot
+  switch, so the pedal was most likely in snapshot footswitch mode (FS1+FS2 cycles the modes), in
+  which footswitches choose snapshots, not presets; the power cycle restored the default mode. To
+  confirm: press FS1+FS2 and see whether the mode changes.
