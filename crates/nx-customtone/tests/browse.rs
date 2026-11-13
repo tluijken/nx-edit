@@ -60,3 +60,19 @@ fn a_search_page_reads_like_a_browse_page() {
     assert_eq!(page.tones[0].downloads, 6145);
     assert!(page.tones.windows(2).all(|w| w[0].downloads >= w[1].downloads));
 }
+
+#[test]
+fn downloads_are_read_from_the_download_box_not_the_comment() {
+    let html = include_str!("fixtures/browse-hx_stomp-rating-p1.html")
+        .replacen("Dual Amp Patch using", "Thanks for 1000 downloads! Dual Amp Patch using", 1);
+    let first = &parse_browse(&html).unwrap().tones[0];
+    assert_eq!(first.downloads, 25115);
+}
+
+#[test]
+fn a_tone_without_an_id_is_skipped_not_the_page() {
+    let html = include_str!("fixtures/browse-hx_stomp-rating-p1.html").replacen("/customtone/tone/4088879/", "/customtone/tone/x/", 2);
+    let page = parse_browse(&html).unwrap();
+    assert_eq!(page.tones.len(), 9);
+    assert!(page.tones.iter().all(|t| t.id != 4088879));
+}

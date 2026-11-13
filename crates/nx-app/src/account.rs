@@ -40,15 +40,26 @@ pub fn remembered() -> Option<(String, String)> {
     Some((user, password))
 }
 
+/// Keeps this account for the next start; an account remembered before is forgotten first, so
+/// only one password is ever kept.
 pub fn remember(user: &str, password: &str) -> Result<(), String> {
-    entry(user.trim())?.set_password(password).map_err(|e| format!("Secret Service: {e}"))?;
+    let user = user.trim();
+    if load_user(&data_dir()).is_some_and(|old| old != user) {
+        forget()?;
+    }
+    entry(user)?.set_password(password).map_err(|e| format!("Secret Service: {e}"))?;
     save_user(&data_dir(), user).map_err(|e| e.to_string())
 }
 
+/// Deletes the kept password, then the user name; if the keyring refuses, the name stays so the
+/// password is not left behind unnamed.
 pub fn forget() -> Result<(), String> {
     let dir = data_dir();
     if let Some(user) = load_user(&dir) {
-        _ = entry(&user).map(|e| e.delete_credential());
+        match entry(&user)?.delete_credential() {
+            Ok(()) | Err(keyring::v1::Error::NoEntry) => {}
+            Err(e) => return Err(format!("Secret Service: {e}")),
+        }
     }
     forget_user(&dir).map_err(|e| e.to_string())
 }

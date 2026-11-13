@@ -32,13 +32,20 @@ pub fn preset_from_capture(path: &Path) -> Result<DevicePreset, String> {
 }
 
 /// Connects to the HX Stomp and reads its preset list and the preset it has selected; the session
-/// stays open for editing and closes when dropped.
-pub fn connect_device() -> Result<(nx_session::Session, Vec<nx_proto::PresetEntry>, DevicePreset), String> {
+/// stays open for editing and closes when dropped. A preset list that cannot be read is reported,
+/// not fatal: editing the selected preset does not need it.
+pub struct Connected {
+    pub session: nx_session::Session,
+    pub presets: Result<Vec<nx_proto::PresetEntry>, String>,
+    pub preset: DevicePreset,
+}
+
+pub fn connect_device() -> Result<Connected, String> {
     let transport = nx_usb::UsbTransport::open().map_err(|e| format!("HX Stomp: {e}"))?;
     let session = nx_session::Session::connect(transport).map_err(|e| format!("HX Stomp: {e}"))?;
-    let presets = preset_list(&session)?;
+    let presets = preset_list(&session);
     let preset = preset_from_session(&session)?;
-    Ok((session, presets, preset))
+    Ok(Connected { session, presets, preset })
 }
 
 /// The presets of the pedal's setlist, read as HX Edit reads them after connecting [seen, 06].

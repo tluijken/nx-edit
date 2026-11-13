@@ -43,30 +43,35 @@ fn main() -> eframe::Result {
             let (preset, link) = match source {
                 Source::Capture(path) => (device::preset_from_capture(path)?, None),
                 Source::Device => {
-                    let (session, presets, preset) = device::connect_device()?;
+                    let device::Connected { session, presets, preset } = device::connect_device()?;
                     (preset, Some((session, presets)))
                 }
             };
             let hlx = preset.to_hlx(&syms)?;
+            let mut list_error = None;
             let link = match link {
                 Some((session, presets)) => Some(view::Connection {
+                    presets: presets.unwrap_or_else(|e| {
+                        list_error = Some(format!("no preset list: {e}"));
+                        Vec::new()
+                    }),
                     addresses: preset.addresses(&syms)?,
                     live: live::Live::start(session),
-                    presets,
                     current: preset.index,
                     generation: 0,
                     syms,
                 }),
                 None => None,
             };
-            Ok((hlx, link))
+            Ok((hlx, link, list_error))
         });
         match loaded {
-            Ok((p, link)) => {
+            Ok((p, link, list_error)) => {
                 status.push(match source {
                     Source::Capture(path) => format!("From capture {}", path.display()),
                     Source::Device => "Connected · changes not saved".to_owned(),
                 });
+                status.extend(list_error);
                 connection = link;
                 Some(p)
             }

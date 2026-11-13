@@ -123,15 +123,15 @@ pub fn parse_browse(html: &str) -> Result<BrowsePage, Error> {
     let total = first_text(doc.root_element(), "#tone-count")
         .and_then(|t| leading_number(&t))
         .ok_or(Error::Page("no tone count"))? as u32;
-    let tones = doc.select(&selector("div.tone")).map(tone).collect::<Result<_, _>>()?;
+    let tones = doc.select(&selector("div.tone")).filter_map(tone).collect();
     Ok(BrowsePage { tones, page, pages, total })
 }
 
-fn tone(el: ElementRef) -> Result<Tone, Error> {
+/// One listed tone; `None` for an entry without a tone page link, which then is left out.
+fn tone(el: ElementRef) -> Option<Tone> {
     let id = el
         .select(&selector("a[href^='/customtone/tone/']"))
-        .find_map(|a| a.value().attr("href")?.trim_start_matches("/customtone/tone/").trim_end_matches('/').parse().ok())
-        .ok_or(Error::Page("tone without an id"))?;
+        .find_map(|a| a.value().attr("href")?.trim_start_matches("/customtone/tone/").trim_end_matches('/').parse().ok())?;
     let mut tone = Tone { id, ..Tone::default() };
     tone.author = first_text(el, "a[href^='/customtone/profile/']").unwrap_or_default();
     tone.comment = first_text(el, "div.comment").unwrap_or_default();
@@ -151,14 +151,13 @@ fn tone(el: ElementRef) -> Result<Tone, Error> {
             tone.style = line;
         }
     }
-    let text = squash(&el.text().collect::<String>());
-    tone.downloads = text
-        .split(" downloads")
-        .next()
-        .filter(|_| text.contains(" downloads"))
-        .and_then(|before| before.rsplit(' ').next()?.parse().ok())
+    // The count sits in the download box; a comment may mention downloads too.
+    tone.downloads = el
+        .select(&selector("div.text-center"))
+        .map(|e| squash(&e.text().collect::<String>()))
+        .find_map(|text| text.split(" downloads").next().filter(|_| text.contains(" downloads"))?.rsplit(' ').next()?.parse().ok())
         .unwrap_or_default();
-    Ok(tone)
+    Some(tone)
 }
 
 fn selector(css: &str) -> Selector {

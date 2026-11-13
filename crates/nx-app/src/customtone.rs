@@ -11,10 +11,16 @@ use nx_customtone::{Account, BrowsePage, Client, Query, Sort};
 use crate::theme;
 use crate::view::{card, chip, dot, mono};
 
+/// A thread's answer, with the session (client) it came from; a signed-out session's answers are
+/// dropped.
+struct Answer {
+    session: u64,
+    reply: Reply,
+}
+
 enum Reply {
     Page(Result<(BrowsePage, Account), String>),
     SignedIn { user: String, outcome: Result<Account, String> },
-    SignedOut,
 }
 
 /// The sign-in form while it is open.
@@ -27,7 +33,9 @@ struct SignInForm {
 
 pub struct CustomToneView {
     client: Arc<Client>,
-    replies: (Sender<Reply>, Receiver<Reply>),
+    replies: (Sender<Answer>, Receiver<Answer>),
+    /// Counts sign-outs; each one starts a new client.
+    session: u64,
     busy: usize,
     query: Query,
     search: String,
@@ -46,6 +54,7 @@ impl Default for CustomToneView {
         Self {
             client: Arc::new(Client::default()),
             replies: mpsc::channel(),
+            session: 0,
             busy: 0,
             query: Query::default(),
             search: String::new(),
@@ -63,9 +72,9 @@ impl Default for CustomToneView {
 
 impl CustomToneView {
     fn spawn(&mut self, ctx: &egui::Context, work: impl FnOnce(&Client) -> Reply + Send + 'static) {
-        let (client, tx, ctx) = (self.client.clone(), self.replies.0.clone(), ctx.clone());
+        let (client, tx, ctx, session) = (self.client.clone(), self.replies.0.clone(), ctx.clone(), self.session);
         std::thread::spawn(move || {
-            _ = tx.send(work(&client));
+            _ = tx.send(Answer { session, reply: work(&client) });
             ctx.request_repaint();
         });
         self.busy += 1;
@@ -83,16 +92,36 @@ impl CustomToneView {
             let outcome = client.sign_in(&user, &password).map_err(|e| e.to_string());
             let outcome = match outcome {
                 Ok(account) if remember => crate::account::remember(&user, &password).map(|()| account),
+                Ok(account) => crate::account::forget().map(|()| account),
                 other => other,
             };
             Reply::SignedIn { user, outcome }
         });
     }
 
+    /// Forgets the kept password and drops the client with its cookies, so nothing of the session
+    /// survives even when line6.com does not answer the sign-out.
+    fn sign_out(&mut self, ctx: &egui::Context) {
+        if let Err(e) = crate::account::forget() {
+            self.error = Some(format!("Not signed out: {e}"));
+            return;
+        }
+        let old = std::mem::replace(&mut self.client, Arc::new(Client::default()));
+        self.session += 1;
+        self.signing_in = false;
+        std::thread::spawn(move || _ = old.sign_out());
+        self.account = Account::SignedOut;
+        self.user = None;
+        self.fetch(ctx);
+    }
+
     fn take_replies(&mut self, ctx: &egui::Context) {
-        let replies: Vec<Reply> = self.replies.1.try_iter().collect();
-        for reply in replies {
+        let answers: Vec<Answer> = self.replies.1.try_iter().collect();
+        for Answer { session, reply } in answers {
             self.busy = self.busy.saturating_sub(1);
+            if session != self.session {
+                continue;
+            }
             if matches!(reply, Reply::SignedIn { .. }) {
                 self.signing_in = false;
             }
@@ -108,10 +137,6 @@ impl CustomToneView {
                     self.user = Some(user);
                     self.form = None;
                     self.fetch(ctx);
-                }
-                Reply::SignedOut => {
-                    self.account = Account::SignedOut;
-                    self.user = None;
                 }
                 Reply::Page(Err(e)) | Reply::SignedIn { outcome: Err(e), .. } => self.error = Some(e),
             }
@@ -161,15 +186,11 @@ impl CustomToneView {
             dot(ui, color, 8.0);
             ui.label(RichText::new(text).font(theme::regular(12.0)).color(theme::TEXT_DIM));
             let signed_in = matches!(self.account, Account::SignedIn { .. });
-            if !signed_in && self.form.is_none() && ui.small_button("Sign in").clicked() {
+            if !signed_in && !self.signing_in && self.form.is_none() && ui.small_button("Sign in").clicked() {
                 self.form = Some(SignInForm { remember: true, ..Default::default() });
             }
             if signed_in && ui.small_button("Sign out").clicked() {
-                _ = crate::account::forget();
-                self.spawn(ui.ctx(), |client| {
-                    _ = client.sign_out();
-                    Reply::SignedOut
-                });
+                self.sign_out(ui.ctx());
             }
         });
     }
