@@ -69,6 +69,7 @@ struct State {
     withhold_acks: bool,
     refused_services: Vec<u8>,
     ignored_closes: Vec<Channel>,
+    append_next: Option<Vec<u8>>,
 }
 
 struct Shared {
@@ -122,6 +123,7 @@ impl FakeDevice {
             withhold_acks: false,
             refused_services: Vec::new(),
             ignored_closes: Vec::new(),
+            append_next: None,
         };
         Self(Arc::new(Shared { state: Mutex::new(state), wake: Condvar::new() }))
     }
@@ -204,6 +206,12 @@ impl FakeDevice {
     /// Notification 20 for a deferred operation.
     pub fn complete_deferred(&self, txn: u64, status: u64, result: Value) {
         self.notify(20, map(vec![(102, Value::from(txn)), (103, Value::from(status)), (104, result)]));
+    }
+
+    /// Appends these bytes to the next transfer the host reads, e.g. a frame header whose body is
+    /// missing.
+    pub fn append_to_next_transfer(&self, bytes: &[u8]) {
+        self.lock().append_next = Some(bytes.to_vec());
     }
 
     /// A data frame with these payload bytes, whatever they are.
@@ -423,7 +431,10 @@ impl Transport for FakeTransport {
         loop {
             let now = Instant::now();
             st.release_due(now);
-            if let Some((t, _)) = st.out.pop_front() {
+            if let Some((mut t, _)) = st.out.pop_front() {
+                if let Some(extra) = st.append_next.take() {
+                    t.extend(extra);
+                }
                 return Ok(Some(t));
             }
             if now >= deadline {

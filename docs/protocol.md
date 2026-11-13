@@ -339,7 +339,10 @@ with `Error::Poisoned`, unsent request bytes are dropped, and no request goes ou
 again. The session keeps acknowledging and keep-aliving so the device is not left with unread
 data. The caller ends the session and connects again. The same holds when the device announces a message larger than
 1 MiB (the largest seen, the preset document, is about 3 KB): the stream is out of step, so the
-half message is discarded and the session poisoned rather than buffered without bound. Opening a
+half message is discarded and the session poisoned rather than buffered without bound. A transfer
+that does not split into frames is handled up to the break, and then the session is poisoned:
+whatever followed is lost (during the handshake this fails the connect; stale transfers from an
+earlier client are drained unread before the first HELLO). Opening a
 channel (HELLO) starts its message streams afresh.
 
 ### Ending a session [seen, partly]

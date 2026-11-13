@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
-use nx_proto::{Frame, FrameKind, Reassembler, Request, split_transfer};
+use nx_proto::{Frame, FrameKind, Reassembler, Request, split_leading};
 use rmpv::Value;
 
 use crate::link::{Link, LinkState, MAX_PAYLOAD};
@@ -116,11 +116,13 @@ impl<T: Transport> Engine<T> {
     /// Reads at most one transfer and handles its frames.
     fn pump(&mut self, timeout: std::time::Duration) -> Result<(), Error> {
         let Some(transfer) = self.transport.read(timeout)? else { return Ok(()) };
-        // A transfer that does not split is noise from a previous session; there is nothing to
-        // answer it with.
-        let Ok(frames) = split_transfer(&transfer) else { return Ok(()) };
+        let (frames, broken) = split_leading(&transfer);
         for frame in frames {
             self.on_frame(frame)?;
+        }
+        if let Some(e) = broken {
+            // Whatever followed the break is lost, and with it maybe a reply or an acknowledgement.
+            self.poison(format!("a transfer that does not split into frames ({e})"));
         }
         Ok(())
     }

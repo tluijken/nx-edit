@@ -403,3 +403,16 @@ fn an_absurd_message_length_leaves_the_device_state_unknown() {
     assert!(matches!(session.request(Request::PresetInfo), Err(Error::Poisoned(_))));
     assert!(device.requests().is_empty());
 }
+
+#[test]
+fn a_transfer_that_does_not_split_is_used_up_to_the_break_and_leaves_the_state_unknown() {
+    let device = FakeDevice::new();
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    let events = session.events();
+    // A frame header announcing 255 body bytes that never come.
+    device.append_to_next_transfer(&[0xff, 0, 0, 0x18, 0xf0, 0x03, 0x02, 0x10]);
+    device.notify(30, Value::Nil);
+    assert!(matches!(events.recv_timeout(Duration::from_secs(1)), Ok(Event::Notification { id: 30, .. })));
+    assert!(matches!(session.request(Request::PresetInfo), Err(Error::Poisoned(_))));
+    assert!(device.requests().is_empty());
+}

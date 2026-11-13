@@ -10,7 +10,7 @@ pub use document::{
     Assignment, Block, ControllerValue, Cursor, DocError, Document, Dsp, Endpoint, Firmware, IntForm, Item, Junction,
     LenForm, ParamValue, Placed, Preset, SNAPSHOT_NAME_MAX, SlotKind, SlotState, Snapshot, Snapshots, Values,
 };
-pub use frame::{FORMAT_CHANNEL, FORMAT_HELLO, Frame, FrameKind, split_transfer};
+pub use frame::{FORMAT_CHANNEL, FORMAT_HELLO, Frame, FrameKind, split_leading, split_transfer};
 pub use message::{Message, Reassembler};
 pub use rpc::{RPC_CHANNEL, Request};
 

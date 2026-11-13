@@ -115,6 +115,14 @@ fn align4(n: usize) -> usize {
 }
 
 pub fn split_transfer(data: &[u8]) -> Result<Vec<Frame>, ProtoError> {
+    match split_leading(data) {
+        (frames, None) => Ok(frames),
+        (_, Some(e)) => Err(e),
+    }
+}
+
+/// The frames of a transfer up to the first that does not fit, and the error that stopped there.
+pub fn split_leading(data: &[u8]) -> (Vec<Frame>, Option<ProtoError>) {
     let mut frames = Vec::new();
     let mut at = 0;
     while data.len() - at >= 8 {
@@ -122,7 +130,7 @@ pub fn split_transfer(data: &[u8]) -> Result<Vec<Frame>, ProtoError> {
         let len = u16::from_le_bytes([header[0], header[1]]) as usize;
         let end = at + 8 + len;
         if end > data.len() {
-            return Err(ProtoError::Truncated { offset: at, need: 8 + len, have: data.len() - at });
+            return (frames, Some(ProtoError::Truncated { offset: at, need: 8 + len, have: data.len() - at }));
         }
         frames.push(Frame {
             format: header[3],
@@ -132,5 +140,5 @@ pub fn split_transfer(data: &[u8]) -> Result<Vec<Frame>, ProtoError> {
         });
         at = align4(end);
     }
-    Ok(frames)
+    (frames, None)
 }
