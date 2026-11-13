@@ -130,6 +130,11 @@ pub enum Error {
     ChannelClosed(Channel),
     #[error("session closed")]
     SessionClosed,
+    /// Something happened after which the device's state is unknown (a request or deferred
+    /// operation timed out, the stream could not be parsed). The session sends nothing more; end
+    /// it and connect again.
+    #[error("device state unknown after {0}; end this session and connect again")]
+    Poisoned(String),
 }
 
 impl From<io::Error> for Error {

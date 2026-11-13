@@ -67,6 +67,9 @@ pub(crate) struct Engine<T: Transport> {
     inflight: [Option<Inflight>; 3],
     deferred: Option<Deferred>,
     subscribers: Vec<Sender<Event>>,
+    /// Why the device's state is unknown, once it is. From then on no request goes out on any
+    /// channel; acknowledgements and keep-alives continue so the device is not left with unread data.
+    poisoned: Option<String>,
 }
 
 fn get(map: &[(Value, Value)], key: u64) -> Option<&Value> {
@@ -92,6 +95,7 @@ impl<T: Transport> Engine<T> {
             inflight: Default::default(),
             deferred: None,
             subscribers: Vec::new(),
+            poisoned: None,
         }
     }
 
@@ -379,6 +383,10 @@ impl<T: Transport> Engine<T> {
                 continue;
             }
             let job = self.queue.remove(i).expect("index is in range");
+            if let Some(reason) = &self.poisoned {
+                _ = job.reply.send(Err(Error::Poisoned(reason.clone())));
+                continue;
+            }
             if self.links[c].state != LinkState::Open || channel == Channel::Events {
                 _ = job.reply.send(Err(Error::ChannelClosed(channel)));
                 continue;
@@ -432,13 +440,29 @@ impl<T: Transport> Engine<T> {
             if self.inflight[i].as_ref().is_some_and(|f| now >= f.deadline) {
                 let f = self.inflight[i].take().expect("checked above");
                 _ = f.reply.send(Err(Error::Timeout("reply")));
+                // The reply may still come, as status 1 of an operation the device then commits.
+                self.poison(format!("a request on {channel:?} timed out"));
             }
         }
         if self.deferred.as_ref().is_some_and(|d| now >= d.deadline) {
             let d = self.deferred.take().expect("checked above");
             _ = d.reply.send(Err(Error::Timeout("notification 20")));
+            self.poison("a deferred operation timed out".into());
         }
         Ok(())
+    }
+
+    /// Marks the device's state as unknown: everything pending fails, unsent request bytes are
+    /// dropped, and no request goes out again in this session.
+    fn poison(&mut self, reason: String) {
+        if self.poisoned.is_some() {
+            return;
+        }
+        for outbox in &mut self.outbox {
+            outbox.clear();
+        }
+        self.poisoned = Some(reason.clone());
+        self.fail_all(Error::Poisoned(reason));
     }
 
     fn flush_acks(&mut self) -> Result<(), Error> {

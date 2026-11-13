@@ -31,6 +31,8 @@ pub enum Reply {
     Silent,
     /// Status 0 with the transaction id as result, after this delay.
     Late(Duration),
+    /// Status 1 (accepted, deferred) after this delay.
+    LateDeferred(Duration),
 }
 
 type Handler = Box<dyn FnMut(Channel, u64, &Request) -> Reply + Send>;
@@ -62,6 +64,7 @@ struct State {
     max_unacked_from_host: u32,
     ignore_hello: bool,
     wedged: bool,
+    withhold_acks: bool,
 }
 
 struct Shared {
@@ -112,6 +115,7 @@ impl FakeDevice {
             max_unacked_from_host: 0,
             ignore_hello: false,
             wedged: false,
+            withhold_acks: false,
         };
         Self(Arc::new(Shared { state: Mutex::new(state), wake: Condvar::new() }))
     }
@@ -134,6 +138,24 @@ impl FakeDevice {
 
     pub fn ignore_hello(&self, on: bool) {
         self.lock().ignore_hello = on;
+    }
+
+    /// Stops acknowledging host data with bare ACKs, so the host's window fills up. Turning it off
+    /// acknowledges everything received at once.
+    pub fn withhold_acks(&self, on: bool) {
+        let mut st = self.lock();
+        st.withhold_acks = on;
+        if !on {
+            for channel in Channel::ALL {
+                let l = &st.links[index(channel)];
+                if l.open && l.received != l.advertised {
+                    let f = st.frame(channel, FrameKind::Ack, &[]);
+                    st.out.push_back((f.encode(), false));
+                }
+            }
+        }
+        drop(st);
+        self.changed();
     }
 
     /// Answers HELLO with a bare acknowledgement, like a device left wedged by an earlier client.
@@ -303,7 +325,7 @@ impl State {
                     for msg in self.reassembler.push(&frame).unwrap_or_default() {
                         self.on_host_message(channel, &msg.body);
                     }
-                    if self.out.len() == before {
+                    if self.out.len() == before && !self.withhold_acks {
                         let f = self.frame(channel, FrameKind::Ack, &[]);
                         self.out.push_back((f.encode(), false));
                     }
@@ -341,6 +363,7 @@ impl State {
             Reply::Deferred => self.send_message(channel, &reply(1, Value::Nil)),
             Reply::Silent => {}
             Reply::Late(after) => self.scheduled.push((Instant::now() + after, channel, reply(0, Value::from(txn)))),
+            Reply::LateDeferred(after) => self.scheduled.push((Instant::now() + after, channel, reply(1, Value::Nil))),
         }
     }
 }

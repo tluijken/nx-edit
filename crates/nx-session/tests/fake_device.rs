@@ -165,21 +165,9 @@ fn a_timeout_is_reported_and_never_answered_with_a_new_handshake() {
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let hellos = device.hellos().len();
     assert!(matches!(session.request(Request::PresetInfo), Err(Error::Timeout(_))));
-    assert!(matches!(session.request(Request::PresetInfo), Err(Error::Timeout(_))));
-    assert_eq!(session.request(Request::ReadGlobal { id: 1 }).unwrap(), Value::from(1));
+    assert!(matches!(session.request(Request::ReadGlobal { id: 1 }), Err(Error::Poisoned(_))));
     thread::sleep(Duration::from_millis(50));
     assert_eq!(device.hellos().len(), hellos);
-}
-
-#[test]
-fn a_late_reply_is_dropped_not_matched_to_the_next_request() {
-    let device = FakeDevice::new();
-    device.on_request(|_, txn, _| if txn == 1000 { Reply::Late(Duration::from_millis(400)) } else { Reply::Ok(Value::from(txn)) });
-    let session = Session::connect_with(device.transport(), config()).unwrap();
-    assert!(matches!(session.request(Request::PresetInfo), Err(Error::Timeout(_))));
-    assert_eq!(session.request(Request::PresetInfo).unwrap(), Value::from(1001));
-    thread::sleep(Duration::from_millis(200));
-    assert_eq!(session.request(Request::PresetInfo).unwrap(), Value::from(1002));
 }
 
 #[test]
@@ -282,4 +270,53 @@ fn close_ends_control_and_events_like_hx_edit() {
     session.close().unwrap();
     assert_eq!(device.closes(), vec![0x1001, 0x1001, 0x1002]);
     assert_eq!(device.events_unacked(), 0);
+}
+
+fn rpc_payload_bytes(device: &FakeDevice) -> usize {
+    device.host_frames(Channel::Rpc).iter().filter_map(|f| f.payload()).map(<[u8]>::len).sum()
+}
+
+#[test]
+fn a_reply_timeout_leaves_the_device_state_unknown() {
+    // The device accepts the request (status 1) only after the host gave up on it, and then commits;
+    // racing that commit can wedge it, so nothing more may go out on any channel.
+    let device = FakeDevice::new();
+    device.on_request(|_, txn, _| {
+        if txn == 1000 { Reply::LateDeferred(Duration::from_millis(400)) } else { Reply::Ok(Value::from(txn)) }
+    });
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    assert!(matches!(session.request(Request::PresetInfo), Err(Error::Timeout(_))));
+    assert!(matches!(session.request(Request::PresetInfo), Err(Error::Poisoned(_))));
+    assert!(matches!(session.request_on(Channel::Control, Request::PresetInfo), Err(Error::Poisoned(_))));
+    thread::sleep(Duration::from_millis(200));
+    assert!(matches!(session.request(Request::PresetInfo), Err(Error::Poisoned(_))));
+    assert_eq!(device.requests().len(), 1);
+    device.notify(30, Value::Nil);
+    wait_for("ACK of the notification", || device.events_unacked() == 0);
+}
+
+#[test]
+fn a_deferred_timeout_leaves_the_device_state_unknown() {
+    let device = FakeDevice::new();
+    device.on_request(|_, _, req| match req {
+        Request::SelectPreset { .. } => Reply::Deferred,
+        _ => Reply::Ok(Value::Nil),
+    });
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    assert!(matches!(session.request(Request::SelectPreset { setlist: 0, index: 1 }), Err(Error::Timeout(_))));
+    assert!(matches!(session.request(Request::PresetInfo), Err(Error::Poisoned(_))));
+    assert_eq!(device.requests().len(), 1);
+}
+
+#[test]
+fn the_unsent_rest_of_a_timed_out_request_is_dropped() {
+    let device = FakeDevice::new();
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    device.withhold_acks(true);
+    let blob = Value::Binary(vec![0xab; 3000]);
+    assert!(matches!(session.request(Request::Other { opcode: 200, args: blob }), Err(Error::Timeout(_))));
+    let sent = rpc_payload_bytes(&device);
+    device.withhold_acks(false);
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(rpc_payload_bytes(&device), sent, "the window opened, but nothing more may go out");
 }

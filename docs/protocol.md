@@ -320,12 +320,22 @@ accepted; a fresh session after a quit is not what the map warns about.
 ### Requests and deferred operations
 
 One request in flight per channel; `0x1080` and `0x1001` run independently, as in `06` [seen].
-Replies are matched by transaction id; a reply whose request timed out is dropped. A status 1
+Replies are matched by transaction id. A status 1
 reply means accepted: the operation completes with notification 20 carrying the same transaction
 id [seen, `02`: status 1 at 16.7391 s, notification 20 at 16.7396 s, next request only after both].
 Until it arrives `nx-session` sends no request on any channel [map: racing a running commit wedges
 the device; HX Edit waits]. Notification 20 is matched against the one deferred operation in
 flight, which also resolves the ambiguity of the two channels' overlapping transaction ids.
+
+**A timeout leaves the device's state unknown** [rule]. A reply that arrives after its request
+was given up on may be status 1, after which the device commits while the host believes nothing
+is running; a deferred operation whose notification 20 never came may still be running; a request
+whose bytes were only partly sent leaves a half message in the device. Guessing which is the case
+is what the spec forbids, so after any reply or deferred timeout the session is *poisoned*: the
+timed-out request reports `Timeout`, everything else pending and every later request fails at once
+with `Error::Poisoned`, unsent request bytes are dropped, and no request goes out on any channel
+again. The session keeps acknowledging and keep-aliving so the device is not left with unread
+data. The caller ends the session and connects again.
 
 ### Ending a session [seen, partly]
 
