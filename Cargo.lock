@@ -2027,6 +2027,8 @@ dependencies = [
  "nx-catalog",
  "nx-hlx",
  "nx-proto",
+ "nx-session",
+ "nx-usb",
  "rmpv",
  "serde_json",
 ]
@@ -2084,7 +2086,9 @@ name = "nx-usb"
 version = "0.1.0"
 dependencies = [
  "nusb",
+ "nx-proto",
  "nx-session",
+ "rmpv",
 ]
 
 [[package]]

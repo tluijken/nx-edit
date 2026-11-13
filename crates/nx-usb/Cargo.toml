@@ -7,3 +7,7 @@ license.workspace = true
 [dependencies]
 nusb = "0.2.9"
 nx-session = { path = "../nx-session" }
+
+[dev-dependencies]
+nx-proto = { path = "../nx-proto" }
+rmpv = "1"
