@@ -1053,6 +1053,11 @@ impl eframe::App for EditorApp {
         egui::CentralPanel::default().frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| {
             if self.screen == Screen::CustomTone {
                 self.customtone.show(ui);
+                let saved = self.customtone.take_saved();
+                if let Some(last) = saved.last() {
+                    self.status = format!("Downloaded to {}", last.display());
+                    self.rescan();
+                }
                 return;
             }
             let lanes = self.preset.as_ref().map(|p| lanes(p, self.catalog.as_ref())).unwrap_or_default();

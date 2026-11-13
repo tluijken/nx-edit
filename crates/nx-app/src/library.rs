@@ -80,6 +80,22 @@ pub fn rename(file: &Path, name: &str) -> Result<(), String> {
     std::fs::write(file, preset.to_vec_pretty()).map_err(|e| format!("{}: {e}", file.display()))
 }
 
+/// Keeps a CustomTone download in the library's `customtone` folder, under the name the site gave
+/// it with path separators replaced. Only HX Stomp presets are kept.
+pub fn save_download(library: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let preset = nx_hlx::Preset::from_slice(bytes).map_err(|e| format!("{file_name}: not a preset ({e})"))?;
+    if preset.device() != nx_hlx::HX_STOMP_DEVICE {
+        return Err(format!("{file_name}: a preset for another device ({})", preset.device()));
+    }
+    let safe: String = file_name.chars().map(|c| if matches!(c, '/' | '\\' | '\0') { '_' } else { c }).collect();
+    let stem = safe.strip_suffix(".hlx").unwrap_or(&safe);
+    let folder = library.join("customtone");
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let target = free_path(&folder, stem);
+    std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
+    Ok(target)
+}
+
 /// `dir/stem.hlx`, or `dir/stem 2.hlx` and so on when that exists.
 fn free_path(dir: &Path, stem: &str) -> PathBuf {
     (1..)
@@ -180,5 +196,27 @@ mod tests {
         assert_eq!(scan(&dir).entries[0].name, "Revv Live");
         assert!(rename(&dir.join("mine/Revv_DM.hlx"), "   ").is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_download_is_kept_in_customtone_under_a_safe_name() {
+        let dir = library_with("download", &[]);
+        let saved = save_download(&dir, "../Revv/DM.hlx", &fixture("Revv_DM.hlx")).unwrap();
+        assert_eq!(saved, dir.join("customtone/.._Revv_DM.hlx"));
+        let again = save_download(&dir, "../Revv/DM.hlx", &fixture("Revv_DM.hlx")).unwrap();
+        assert_eq!(again, dir.join("customtone/.._Revv_DM 2.hlx"));
+        assert_eq!(scan(&dir).entries.iter().filter(|e| e.folder == "customtone").count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_download_that_is_not_an_hx_stomp_preset_is_refused() {
+        let dir = library_with("download-bad", &[]);
+        assert!(save_download(&dir, "page.hlx", b"<html>Registration required</html>").is_err());
+        let mut helix: serde_json::Value = serde_json::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+        helix["data"]["device"] = serde_json::json!(2162689);
+        assert!(save_download(&dir, "helix.hlx", &serde_json::to_vec(&helix).unwrap()).is_err());
+        assert!(!dir.join("customtone").exists() || scan(&dir).entries.is_empty());
+        std::fs::remove_dir_all(dir).ok();
     }
 }

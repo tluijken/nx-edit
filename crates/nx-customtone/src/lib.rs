@@ -281,3 +281,37 @@ impl Client {
         Ok((parse_browse(&html)?, account_state(&html)))
     }
 }
+
+/// A tone file as line6.com hands it out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Download {
+    /// From the response's `Content-Disposition`, e.g. `BE100 CH1+2.hlx`.
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The file name in a `Content-Disposition` header, quoted or not.
+pub fn file_name_from_disposition(header: &str) -> Option<String> {
+    let value = header.split(';').map(str::trim).find_map(|part| part.strip_prefix("filename="))?;
+    Some(value.trim_matches('"').to_owned()).filter(|name| !name.is_empty())
+}
+
+impl Client {
+    /// Fetches a tone's preset file. Needs a signed-in account with a registered product; without
+    /// one the site answers with a page instead of a file, which is reported.
+    pub fn download(&self, tone: u64) -> Result<Download, Error> {
+        let mut response = self
+            .agent
+            .get(&format!("https://line6.com/customtone/tone/deliver/{tone}/"))
+            .header("User-Agent", concat!("nx-edit/", env!("CARGO_PKG_VERSION")))
+            .call()
+            .map_err(|e| Error::Http(e.to_string()))?;
+        let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let file_name = header("content-disposition")
+            .as_deref()
+            .and_then(file_name_from_disposition)
+            .ok_or(Error::Page("the download gave no file; signed in with a registered product?"))?;
+        let bytes = response.body_mut().with_config().limit(16 * 1024 * 1024).read_to_vec().map_err(|e| Error::Http(e.to_string()))?;
+        Ok(Download { file_name, bytes })
+    }
+}

@@ -42,3 +42,11 @@ fn a_refused_sign_in_reports_the_site_error() {
     assert_eq!(sign_in_error(REFUSED), Some(257));
     assert_eq!(sign_in_error(SIGNED_IN), None);
 }
+
+#[test]
+fn the_file_name_comes_from_the_download_header() {
+    use nx_customtone::file_name_from_disposition;
+    assert_eq!(file_name_from_disposition("inline;filename=\"BE100 CH1+2.hlx\"").as_deref(), Some("BE100 CH1+2.hlx"));
+    assert_eq!(file_name_from_disposition("attachment; filename=Plain.hlx").as_deref(), Some("Plain.hlx"));
+    assert_eq!(file_name_from_disposition("inline"), None);
+}

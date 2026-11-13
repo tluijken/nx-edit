@@ -21,6 +21,8 @@ struct Answer {
 enum Reply {
     Page(Result<(BrowsePage, Account), String>),
     SignedIn { user: String, outcome: Result<Account, String> },
+    /// A tone downloaded into the library, or why not.
+    Saved(Result<std::path::PathBuf, String>),
 }
 
 /// The sign-in form while it is open.
@@ -46,6 +48,10 @@ pub struct CustomToneView {
     error: Option<String>,
     open: Option<u64>,
     started: bool,
+    /// Library files saved since the editor last asked, for it to list them.
+    saved: Vec<std::path::PathBuf>,
+    /// The last download's outcome, shown under the toolbar.
+    notice: Option<String>,
     signing_in: bool,
 }
 
@@ -65,6 +71,8 @@ impl Default for CustomToneView {
             error: None,
             open: None,
             started: false,
+            saved: Vec::new(),
+            notice: None,
             signing_in: false,
         }
     }
@@ -138,6 +146,12 @@ impl CustomToneView {
                     self.form = None;
                     self.fetch(ctx);
                 }
+                Reply::Saved(Ok(path)) => {
+                    let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                    self.notice = Some(format!("Downloaded \"{name}\" to the library (customtone)"));
+                    self.saved.push(path);
+                }
+                Reply::Saved(Err(e)) => self.error = Some(format!("Download failed: {e}")),
                 Reply::Page(Err(e)) | Reply::SignedIn { outcome: Err(e), .. } => self.error = Some(e),
             }
         }
@@ -159,6 +173,9 @@ impl CustomToneView {
             ui.add_space(10.0);
             if let Some(error) = &self.error {
                 ui.label(RichText::new(error).color(theme::ACCENT));
+            }
+            if let Some(notice) = &self.notice {
+                ui.label(RichText::new(notice).color(theme::GREEN));
             }
             if self.busy > 0 {
                 ui.horizontal(|ui| {
@@ -305,7 +322,9 @@ impl CustomToneView {
 
     fn list(&mut self, ui: &mut Ui) {
         let Some(page) = &self.page else { return };
+        let can_download = matches!(self.account, Account::SignedIn { can_download: true });
         let mut toggle = None;
+        let mut download = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             for tone in &page.tones {
                 let open = self.open == Some(tone.id);
@@ -345,6 +364,9 @@ impl CustomToneView {
                             }
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
+                                if can_download && ui.button("Download to library").clicked() {
+                                    download = Some(tone.id);
+                                }
                                 dot(ui, theme::ACCENT, 8.0);
                                 ui.hyperlink_to("Open on line6.com", format!("https://line6.com/customtone/tone/{}/", tone.id));
                             });
@@ -364,6 +386,21 @@ impl CustomToneView {
         if let Some(id) = toggle {
             self.open = if self.open == Some(id) { None } else { Some(id) };
         }
+        if let Some(id) = download {
+            self.notice = None;
+            self.spawn(ui.ctx(), move |client| {
+                let saved = client
+                    .download(id)
+                    .map_err(|e| e.to_string())
+                    .and_then(|d| crate::library::save_download(&crate::library::default_dir(), &d.file_name, &d.bytes));
+                Reply::Saved(saved)
+            });
+        }
+    }
+
+    /// Library files downloaded since the last call.
+    pub fn take_saved(&mut self) -> Vec<std::path::PathBuf> {
+        std::mem::take(&mut self.saved)
     }
 }
 
