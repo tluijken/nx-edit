@@ -518,11 +518,16 @@ impl EditorApp {
     }
 
     fn go(&mut self, to: Leave) {
-        self.unsaved = false;
+        // Opening a file clears `unsaved` only once it opened, so a file that does not open keeps
+        // the edits it could not replace.
         match to {
             Leave::Open(path) => self.open_file(path),
-            Leave::Pedal => self.show_pedal(),
+            Leave::Pedal => {
+                self.unsaved = false;
+                self.show_pedal();
+            }
             Leave::Select(index) => {
+                self.unsaved = false;
                 self.show_pedal();
                 self.select_preset(index);
             }
@@ -1348,6 +1353,19 @@ mod tests {
         harness.run();
         assert_eq!(harness.state().preset.as_ref().unwrap().name(), "Mark Lead");
         assert_eq!(std::fs::read(&file).unwrap(), before);
+    }
+
+    #[test]
+    fn a_file_that_does_not_open_keeps_the_edits_unsaved() {
+        let file = library_file("open-fails");
+        let mut harness = editor_on(&file);
+        harness.state_mut().set_param("block2", "Drive", 0.7);
+        harness.state_mut().leave(Leave::Open(file.with_file_name("gone.hlx")));
+        harness.run();
+        harness.get_by_label("Discard").click();
+        harness.run();
+        assert_eq!(harness.state().showing_file.as_deref(), Some(file.as_path()));
+        assert!(harness.state().unsaved);
     }
 
     #[test]
