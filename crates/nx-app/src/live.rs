@@ -74,7 +74,7 @@ fn work(session: Session, inbox: Receiver<Edit>, report: Sender<String>) {
             // A refusal means nx-edit addressed something it does not understand yet; sending
             // more of the same is how a dragged knob turned into two dozen refused edits.
             if let Err(e) = apply(&session, &mut selected, edit) {
-                _ = report.send(format!("{e}; schrijven gestopt"));
+                _ = report.send(format!("{e}; writing stopped"));
                 return;
             }
         }

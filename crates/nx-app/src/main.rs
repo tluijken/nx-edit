@@ -21,7 +21,7 @@ fn main() -> eframe::Result {
         cli::Command::Import(installer) => {
             let dest = nx_catalog::default_res_dir();
             match nx_catalog::import_installer(&installer, &dest) {
-                Ok(()) => println!("HX Edit-data geïmporteerd in {}", dest.display()),
+                Ok(()) => println!("HX Edit data imported into {}", dest.display()),
                 Err(e) => {
                     eprintln!("{e}");
                     std::process::exit(1);
@@ -57,8 +57,8 @@ fn main() -> eframe::Result {
         match loaded {
             Ok((p, link)) => {
                 status.push(match source {
-                    Source::Capture(path) => format!("uit opname {}", path.display()),
-                    Source::Device => "verbonden met HX Stomp · wijzigingen niet opgeslagen".to_owned(),
+                    Source::Capture(path) => format!("From capture {}", path.display()),
+                    Source::Device => "Connected · changes not saved".to_owned(),
                 });
                 connection = link;
                 Some(p)
@@ -86,7 +86,7 @@ fn main() -> eframe::Result {
         }
     };
     if status.is_empty() {
-        status.push("niet verbonden · alleen lezen".to_owned());
+        status.push("Not connected · read-only".to_owned());
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

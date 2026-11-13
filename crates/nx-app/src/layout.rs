@@ -16,6 +16,8 @@ pub struct Tile {
     /// The block's slot on the pedal; empty slots leave gaps in the drawing.
     pub position: u8,
     pub label: String,
+    /// HX Edit's category of the model (Amp, Cab, Delay, ...), when the catalog knows it.
+    pub category: Option<String>,
     pub category_color: Option<u32>,
     pub enabled: bool,
 }
@@ -23,14 +25,14 @@ pub struct Tile {
 pub fn lanes(preset: &Preset, catalog: Option<&Catalog>) -> Vec<Lane> {
     let mut lanes = vec![Lane { path: 0, tiles: Vec::new(), output: "Main L/R" }];
     for block in preset.blocks() {
+        let category = catalog.and_then(|c| c.categories().iter().find(|cat| cat.model_ids.contains(&block.model)));
         let tile = Tile {
             label: catalog
                 .and_then(|c| c.model(&block.model))
                 .and_then(|m| m.name.clone())
                 .unwrap_or_else(|| block.model.clone()),
-            category_color: catalog.and_then(|c| {
-                c.categories().iter().find(|cat| cat.model_ids.contains(&block.model)).map(|cat| cat.color)
-            }),
+            category: category.map(|c| c.name.clone()),
+            category_color: category.map(|c| c.color),
             enabled: block.enabled,
             position: block.position,
             block_key: block.key,
@@ -70,6 +72,13 @@ pub fn branch(preset: &Preset) -> Option<Branch> {
         split: preset.split().map_or(first, |s| s.position),
         join: preset.join().map_or(after_last, |j| j.position),
     })
+}
+
+/// Slot columns the chain needs between its input and output: through the last block, and through
+/// the join when path B rejoins after it.
+pub fn slot_columns(lanes: &[Lane], branch: Option<Branch>) -> u8 {
+    let blocks = lanes.iter().flat_map(|l| &l.tiles).map(|t| t.position + 1).max().unwrap_or(0);
+    blocks.max(branch.map_or(0, |b| b.join))
 }
 
 /// Pixels of vertical drag that sweep a knob through its whole range.
@@ -190,6 +199,16 @@ mod tests {
     }
 
     #[test]
+    fn the_chain_has_a_column_per_slot_up_to_the_last_block_or_the_join() {
+        let dm = preset("Revv_DM.hlx");
+        assert_eq!(slot_columns(&lanes(&dm, None), branch(&dm)), 8);
+        let home = preset("Revv_Home.hlx");
+        assert_eq!(slot_columns(&lanes(&home, None), branch(&home)), 7);
+        let branch_past_blocks = Some(Branch { split: 6, join: 9 });
+        assert_eq!(slot_columns(&lanes(&dm, None), branch_past_blocks), 9);
+    }
+
+    #[test]
     fn a_split_without_blocks_below_draws_no_branch() {
         assert_eq!(branch(&preset("Revv_Home.hlx")), None);
     }
@@ -265,5 +284,6 @@ mod tests {
         let lanes = lanes(&preset("Revv_DM.hlx"), Some(&catalog()));
         let ts = lanes[0].tiles.iter().find(|t| t.label == "Scream 808").unwrap();
         assert_eq!(ts.category_color, Some(0xf5901e));
+        assert_eq!(ts.category.as_deref(), Some("Distortion"));
     }
 }

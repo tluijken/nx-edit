@@ -12,14 +12,19 @@ pub const PANEL: Color32 = Color32::from_rgb(0x25, 0x26, 0x20);
 pub const RAISED: Color32 = Color32::from_rgb(0x2e, 0x2f, 0x29);
 pub const RAISED_HI: Color32 = Color32::from_rgb(0x3a, 0x3b, 0x33);
 pub const LANE: Color32 = Color32::from_rgb(0x22, 0x23, 0x1e);
-pub const LANE_SELECTED: Color32 = Color32::from_rgb(0x2b, 0x2c, 0x26);
 pub const TEXT: Color32 = Color32::from_rgb(0xf8, 0xf8, 0xf2);
 pub const TEXT_MID: Color32 = Color32::from_rgb(0xd6, 0xd6, 0xcc);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(0xa6, 0xa2, 0x8c);
 pub const SWITCH_OFF: Color32 = Color32::from_rgb(0x49, 0x48, 0x3e);
 pub const ARM_OFF: Color32 = Color32::from_rgb(0x75, 0x71, 0x5e);
 
+/// The signal lines behind the blocks.
+pub const WIRE: Color32 = Color32::from_rgb(0x5d, 0x5b, 0x4d);
+/// The power icon of a bypassed block.
+pub const POWER_OFF: Color32 = Color32::from_rgb(0x8f, 0x8b, 0x76);
+
 pub const ORANGE: Color32 = Color32::from_rgb(0xfd, 0x97, 0x1f);
+pub const GREEN: Color32 = Color32::from_rgb(0xa6, 0xe2, 0x2e);
 
 pub const ACCENT: Color32 = ORANGE;
 

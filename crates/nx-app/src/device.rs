@@ -40,12 +40,12 @@ pub fn connect_device() -> Result<(nx_session::Session, DevicePreset), String> {
 
 /// Reads only: preset info (op 23), then the document (op 22), as HX Edit does after a switch.
 pub fn preset_from_session(session: &nx_session::Session) -> Result<DevicePreset, String> {
-    let info = session.request(Request::PresetInfo).map_err(|e| format!("presetinfo: {e}"))?;
-    let document = match session.request(Request::PresetDocument).map_err(|e| format!("presetdocument: {e}"))? {
+    let info = session.request(Request::PresetInfo).map_err(|e| format!("preset info: {e}"))?;
+    let document = match session.request(Request::PresetDocument).map_err(|e| format!("preset document: {e}"))? {
         // The document travels as a MessagePack str, not bin, although it is not UTF-8.
         Value::String(s) => s.as_bytes().to_vec(),
         Value::Binary(b) => b,
-        other => return Err(format!("presetdocument: onverwacht antwoord {other}")),
+        other => return Err(format!("preset document: unexpected reply {other}")),
     };
     Ok(DevicePreset { name: preset_name(&info).unwrap_or_default(), document })
 }

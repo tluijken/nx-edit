@@ -29,9 +29,9 @@ pub fn catalog_status(err: &nx_catalog::CatalogError, res_dir: &Path) -> String 
         nx_catalog::CatalogError::Io { path, source }
             if path == res_dir && source.kind() == std::io::ErrorKind::NotFound =>
         {
-            "geen HX Edit-data; importeer met nx-edit --import-hxedit <installer>".to_owned()
+            "No HX Edit data; import it with nx-edit --import-hxedit <installer>".to_owned()
         }
-        other => format!("HX Edit-data in {} niet geladen: {other}", res_dir.display()),
+        other => format!("HX Edit data in {} not loaded: {other}", res_dir.display()),
     }
 }
 
