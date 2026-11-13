@@ -1,6 +1,7 @@
 mod cli;
 mod device;
 mod layout;
+mod live;
 mod theme;
 mod view;
 
@@ -33,20 +34,33 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
+    let mut connection = None;
     let from_pedal = source.as_ref().and_then(|source| {
-        let preset = nx_catalog::ModelSymbols::load(&res_dir.join("Helix.sym")).map_err(|e| e.to_string()).and_then(|syms| {
-            match source {
-                Source::Capture(path) => device::preset_from_capture(path),
-                Source::Device => device::preset_from_device(),
-            }
-            .and_then(|p| p.to_hlx(&syms))
+        let loaded = nx_catalog::ModelSymbols::load(&res_dir.join("Helix.sym")).map_err(|e| e.to_string()).and_then(|syms| {
+            let (preset, session) = match source {
+                Source::Capture(path) => (device::preset_from_capture(path)?, None),
+                Source::Device => {
+                    let (session, preset) = device::connect_device()?;
+                    (preset, Some(session))
+                }
+            };
+            let hlx = preset.to_hlx(&syms)?;
+            let link = match session {
+                Some(session) => {
+                    let addresses = preset.addresses(&syms)?;
+                    Some(view::Connection { live: live::Live::start(session), addresses })
+                }
+                None => None,
+            };
+            Ok((hlx, link))
         });
-        match preset {
-            Ok(p) => {
+        match loaded {
+            Ok((p, link)) => {
                 status.push(match source {
                     Source::Capture(path) => format!("uit opname {}", path.display()),
-                    Source::Device => "van HX Stomp · alleen lezen".to_owned(),
+                    Source::Device => "verbonden met HX Stomp · wijzigingen niet opgeslagen".to_owned(),
                 });
+                connection = link;
                 Some(p)
             }
             Err(e) => {
@@ -87,7 +101,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
-            Ok(Box::new(view::EditorApp::new(preset, catalog, status.join(" · "))))
+            Ok(Box::new(view::EditorApp::new(preset, catalog, status.join(" · "), connection)))
         }),
     )
 }

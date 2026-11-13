@@ -1,6 +1,7 @@
 //! Presets as the pedal holds them: the op-22 document plus the name from op 23, read from a
 //! capture or from the pedal itself, and turned into an `.hlx` view for the editor.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
@@ -28,16 +29,13 @@ pub fn preset_from_capture(path: &Path) -> Result<DevicePreset, String> {
     preset_from_frames(frames)?.ok_or_else(|| format!("{}: no preset document in this capture", path.display()))
 }
 
-/// The preset the pedal has selected now, read from a connected HX Stomp. The session is closed
-/// before this returns.
-pub fn preset_from_device() -> Result<DevicePreset, String> {
+/// Connects to the HX Stomp and reads the preset it has selected; the session stays open for
+/// editing and closes when dropped.
+pub fn connect_device() -> Result<(nx_session::Session, DevicePreset), String> {
     let transport = nx_usb::UsbTransport::open().map_err(|e| format!("HX Stomp: {e}"))?;
     let session = nx_session::Session::connect(transport).map_err(|e| format!("HX Stomp: {e}"))?;
-    let preset = preset_from_session(&session);
-    let closed = session.close().map_err(|e| format!("HX Stomp sluiten: {e}"));
-    let preset = preset?;
-    closed?;
-    Ok(preset)
+    let preset = preset_from_session(&session)?;
+    Ok((session, preset))
 }
 
 /// Reads only: preset info (op 23), then the document (op 22), as HX Edit does after a switch.
@@ -92,7 +90,42 @@ fn preset_from_frames(frames: impl IntoIterator<Item = Frame>) -> Result<Option<
     Ok(document.map(|document| DevicePreset { name: name.unwrap_or_default(), document }))
 }
 
+/// Where an `.hlx` block lives on the pedal: what op 78 and op 30 call slot (key 98) and key 26,
+/// and its parameters in the order op 30 counts them (key 28).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockAddress {
+    pub slot: u64,
+    /// Key 26, which is not the path: the slot number already places a block on path A or B, and
+    /// the pedal reports its path B cab as `{98: 17, 26: 0}`. 26: 1 selected a second cab that a
+    /// single cab block does not have (the pedal showed None and refused every edit), so it is
+    /// probably the sub-block of a dual cab or an amp+cab.
+    pub sub: u64,
+    pub params: Vec<String>,
+}
+
+impl BlockAddress {
+    pub fn param(&self, name: &str) -> Option<u64> {
+        self.params.iter().position(|p| p == name).map(|i| i as u64)
+    }
+}
+
 impl DevicePreset {
+    /// Addresses by `.hlx` block key, numbered as [`DevicePreset::to_hlx`] numbers them.
+    pub fn addresses(&self, syms: &ModelSymbols) -> Result<HashMap<String, BlockAddress>, String> {
+        let preset = Document::decode(&self.document).and_then(|d| d.preset()).map_err(|e| e.to_string())?;
+        Ok(preset
+            .blocks()
+            .filter(|p| p.dsp == 0)
+            .enumerate()
+            .map(|(i, placed)| {
+                let names = syms.get(placed.block.model).map(|s| s.parameters.clone()).unwrap_or_default();
+                let count = (placed.block.values.params as usize).min(names.len());
+                let address = BlockAddress { slot: placed.slot as u64, sub: 0, params: names[..count].to_vec() };
+                (format!("block{i}"), address)
+            })
+            .collect())
+    }
+
     /// The document as an `.hlx` preset, with blocks numbered in slot order like HX Edit's exports.
     pub fn to_hlx(&self, syms: &ModelSymbols) -> Result<nx_hlx::Preset, String> {
         let preset = Document::decode(&self.document).and_then(|d| d.preset()).map_err(|e| e.to_string())?;
@@ -330,5 +363,23 @@ mod tests {
         });
         let session = nx_session::Session::connect(device.transport()).unwrap();
         assert!(preset_from_session(&session).is_err());
+    }
+
+    #[test]
+    fn blocks_keep_their_address_on_the_pedal() {
+        let Some(syms) = helix_sym() else { return };
+        let captured = preset_from_capture(&capture("02-select-preset-01C")).unwrap();
+        let addresses = captured.addresses(&syms).unwrap();
+        let amp = &addresses["block2"];
+        assert_eq!((amp.slot, amp.sub), (3, 0));
+        let cab = addresses.values().find(|a| a.slot == 17).expect("the cab on path B is slot 17");
+        assert_eq!(cab.sub, 0, "key 26 is not the path: 1 selects a second cab that is not there");
+        assert!(addresses.values().all(|a| a.sub == 0));
+        assert_eq!(amp.param("Drive"), Some(0));
+        assert_eq!(amp.param("Nonexistent"), None);
+        let hlx = captured.to_hlx(&syms).unwrap();
+        for block in hlx.blocks() {
+            assert!(addresses.contains_key(&block.key), "{} has no address", block.key);
+        }
     }
 }

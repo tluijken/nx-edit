@@ -82,13 +82,20 @@ completes later with notification 20 `{102: txn, 103: status, 104: result}` [see
 | 22 | read current preset document | nil | document (str), see "Preset document" | 02, 05, 06 |
 | 23 | current preset info | nil | `107`, `108`, `109` name (NUL-terminated), `117` modified, `83`, `92` snapshot | 02, 05 |
 | 24 | read global setting | `118` id | `{118: id, 119: value}` | 05 |
-| 30 | set parameter | `98` block, `26` path, `28` param index, `29` true, `119` value | status 0, echoes args | 03 |
+| 30 | set parameter | `98` block, `26` sub-block (not the path, see below), `28` param index, `29` true, `119` value | status 0, echoes args | 03 |
 | 41 | block on/off | `98` block, `59` enabled | status 0 | 04 |
 | 76 | (connect) | nil | map of floats | 06 |
-| 78 | select block (editor focus) | `98` block, `26` path | status 0 | 03, 04 |
+| 78 | select block (editor focus) | `98` block, `26` sub-block | status 0 | 03, 04 |
 | 88 | select snapshot | `92` index | status 0 | 05 |
 
 `98` is the slot index in the preset document (input is slot 0) [seen: amp at slot 3, delay at 5].
+
+`26` is not the path [seen, live session 2026-11-13]: the slot number already places a block on
+path A or B, and the pedal reports its own selection of the path B cab (slot 17) as `{98: 17, 26: 0}`.
+Sending `{98: 17, 26: 1}` made the pedal select a second cab that the single cab block does not have
+(its screen showed None), and op 30 on it failed with status 255 `{111: -3}`. It is probably the
+sub-block of a dual cab or an amp+cab [inferred]; nx-edit sends 0 until a capture shows HX Edit
+sending anything else.
 `28` is the parameter index in the model's parameter order [inferred: Drive is the amp's first
 parameter and is 0].
 
@@ -140,7 +147,7 @@ The **preset name is not in the document** [seen]; it comes from op 23 (key 109)
 | 4 | controller assignments, array of 10 indexed by controller | [seen] |
 | 2 | `{0: [13 × int16 0], 1: [13 × [7 × uint8 0]]}` | raw |
 | 5 | global: `16` tempo 120.0 [inferred, = hlx `@tempo`], 45–56 likely Variax (46/47 = −0.1 like `@variax_toneknob/volumeknob`), 30, 134 | raw |
-| 6 | cursor `{98: slot, 26: path}`: the block selected in the editor | [seen] |
+| 6 | cursor `{98: slot, 26: sub-block}`: the block selected in the editor | [seen] |
 | 10 | snapshots | [seen] |
 
 ### Slots (key 0.22) [seen]

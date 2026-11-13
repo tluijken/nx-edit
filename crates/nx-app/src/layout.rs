@@ -72,6 +72,21 @@ pub fn branch(preset: &Preset) -> Option<Branch> {
     })
 }
 
+/// Pixels of vertical drag that sweep a knob through its whole range.
+pub const KNOB_TRAVEL: f32 = 200.0;
+
+/// A float parameter's value after dragging its knob `up` pixels, clamped to its range and rounded
+/// to hundredths of the range, the steps HX Edit sends. `None` for anything but a ranged float.
+pub fn dragged(value: f64, def: &nx_catalog::ParamDef, up: f32) -> Option<f64> {
+    let (lo, hi) = (def.min?, def.max?);
+    if def.value_type != 1 || hi <= lo {
+        return None;
+    }
+    let span = hi - lo;
+    let raw = (value + f64::from(up / KNOB_TRAVEL) * span).clamp(lo, hi);
+    Some(lo + ((raw - lo) / span * 100.0).round() / 100.0 * span)
+}
+
 /// A parameter value as HX Edit shows it: 0–1 knobs on a 0–10 scale, switches as On/Off.
 pub fn display_value(value: &serde_json::Value, def: Option<&nx_catalog::ParamDef>) -> String {
     match value {
@@ -192,6 +207,44 @@ mod tests {
         let cat = catalog();
         let drive = cat.model("HD2_AmpRevvGenRed").unwrap().params.iter().find(|p| p.id == "Drive").unwrap();
         assert_eq!(display_value(&serde_json::json!(0.45), Some(drive)), "4.5");
+    }
+
+    fn param<'a>(cat: &'a Catalog, model: &str, id: &str) -> &'a nx_catalog::ParamDef {
+        cat.model(model).unwrap().params.iter().find(|p| p.id == id).unwrap()
+    }
+
+    #[test]
+    fn dragging_up_a_fifth_of_the_travel_adds_a_fifth_of_the_range() {
+        let cat = catalog();
+        let drive = param(&cat, "HD2_AmpRevvGenRed", "Drive");
+        let got = dragged(0.45, drive, 40.0).unwrap();
+        assert!((got - 0.65).abs() < 1e-9, "{got}");
+    }
+
+    #[test]
+    fn a_dragged_value_stays_in_range() {
+        let cat = catalog();
+        let drive = param(&cat, "HD2_AmpRevvGenRed", "Drive");
+        assert_eq!(dragged(0.9, drive, 500.0), Some(1.0));
+        assert_eq!(dragged(0.1, drive, -500.0), Some(0.0));
+    }
+
+    #[test]
+    fn a_dragged_value_lands_on_hundredths_of_the_range() {
+        let cat = catalog();
+        let drive = param(&cat, "HD2_AmpRevvGenRed", "Drive");
+        let got = dragged(0.45, drive, 1.2).unwrap();
+        assert!((got - 0.46).abs() < 1e-9, "{got}");
+    }
+
+    #[test]
+    fn only_ranged_float_parameters_can_be_dragged() {
+        let mut def = param(&catalog(), "HD2_AmpRevvGenRed", "Drive").clone();
+        def.value_type = 0;
+        assert_eq!(dragged(1.0, &def, 10.0), None);
+        def.value_type = 1;
+        def.max = None;
+        assert_eq!(dragged(0.5, &def, 10.0), None);
     }
 
     #[test]

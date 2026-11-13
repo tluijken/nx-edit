@@ -111,6 +111,21 @@ impl Preset {
         self.raw["data"]["tone"]["global"]["@current_snapshot"].as_u64().unwrap_or_default() as usize
     }
 
+    /// Replaces an existing model parameter of a block; false if the block or parameter is absent.
+    pub fn set_param(&mut self, block_key: &str, name: &str, value: Value) -> bool {
+        if name.starts_with('@') {
+            return false;
+        }
+        let slot = self.raw.pointer_mut("/data/tone/dsp0").and_then(|d| d.get_mut(block_key)).and_then(|b| b.get_mut(name));
+        match slot {
+            Some(v) => {
+                *v = value;
+                true
+            }
+            None => false,
+        }
+    }
+
     fn dsp0(&self) -> Option<&Map<String, Value>> {
         self.raw.get("data")?.get("tone")?.get("dsp0")?.as_object()
     }

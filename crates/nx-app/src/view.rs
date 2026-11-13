@@ -1,10 +1,14 @@
-//! Layout B: HX Edit's arrangement in Scythe's colours. Read-only for now.
+//! Layout B: HX Edit's arrangement in Scythe's colours. Knobs are live while connected to the pedal.
+
+use std::collections::HashMap;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use nx_catalog::Catalog;
 use nx_hlx::Preset;
 
-use crate::layout::{Tile, branch, display_value, lanes};
+use crate::device::BlockAddress;
+use crate::layout::{Tile, branch, display_value, dragged, lanes};
+use crate::live::Live;
 use crate::theme;
 
 const TILE: egui::Vec2 = vec2(96.0, 56.0);
@@ -15,18 +19,34 @@ const GAP: f32 = 22.0;
 const BRANCH_INSET: f32 = 28.0;
 const OUTPUT: egui::Vec2 = vec2(84.0, 28.0);
 
+/// The open session with the pedal and where each block of the shown preset lives on it.
+pub struct Connection {
+    pub live: Live,
+    pub addresses: HashMap<String, BlockAddress>,
+}
+
+/// A knob being dragged: its block and parameter, the value it started at, and the pixels moved up.
+struct Drag {
+    block: String,
+    param: String,
+    start: f64,
+    up: f32,
+}
+
 pub struct EditorApp {
     preset: Option<Preset>,
     catalog: Option<Catalog>,
     selected_block: Option<String>,
     selected_category: usize,
     status: String,
+    connection: Option<Connection>,
+    drag: Option<Drag>,
 }
 
 impl EditorApp {
-    pub fn new(preset: Option<Preset>, catalog: Option<Catalog>, status: String) -> Self {
+    pub fn new(preset: Option<Preset>, catalog: Option<Catalog>, status: String, connection: Option<Connection>) -> Self {
         let selected_block = preset.as_ref().and_then(|p| p.blocks().first().map(|b| b.key.clone()));
-        Self { preset, catalog, selected_block, selected_category: 1, status }
+        Self { preset, catalog, selected_block, selected_category: 1, status, connection, drag: None }
     }
 
     fn top_bar(&self, ui: &mut Ui) {
@@ -173,21 +193,54 @@ impl EditorApp {
         painter.galley(rect.left_top() + vec2(6.0, 22.0), galley, text_color);
     }
 
-    fn knobs(&self, ui: &mut Ui) {
-        let (Some(preset), Some(key)) = (&self.preset, &self.selected_block) else { return };
-        let Some(block) = preset.blocks().into_iter().find(|b| &b.key == key) else { return };
-        let model = self.catalog.as_ref().and_then(|c| c.model(&block.model));
-        let title = model.and_then(|m| m.name.clone()).unwrap_or_else(|| block.model.clone());
+    fn knobs(&mut self, ui: &mut Ui) {
+        let (Some(preset), Some(key)) = (&self.preset, self.selected_block.clone()) else { return };
+        let Some(block) = preset.blocks().into_iter().find(|b| b.key == key) else { return };
+        let model = self.catalog.as_ref().and_then(|c| c.model(&block.model)).cloned();
+        let title = model.as_ref().and_then(|m| m.name.clone()).unwrap_or_else(|| block.model.clone());
         ui.label(egui::RichText::new(title).font(theme::semibold(14.0)));
         ui.add_space(4.0);
+        let address = self.connection.as_ref().and_then(|c| c.addresses.get(&key));
+        let mut turned = None;
         egui::ScrollArea::horizontal().show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (name, value) in &block.params {
-                    let def = model.and_then(|m| m.params.iter().find(|p| &p.id == name));
-                    knob(ui, def.map_or(name.as_str(), |d| d.name.as_str()), &display_value(value, def), knob_fraction(value, def));
+                    let def = model.as_ref().and_then(|m| m.params.iter().find(|p| &p.id == name));
+                    let current = value.as_f64().filter(|_| value.is_f64());
+                    let live = match (def, current) {
+                        (Some(d), Some(v)) if address.and_then(|a| a.param(name)).is_some() => dragged(v, d, 0.0).map(|_| (d, v)),
+                        _ => None,
+                    };
+                    let label = def.map_or(name.as_str(), |d| d.name.as_str());
+                    let response = knob(ui, label, &display_value(value, def), knob_fraction(value, def), live.is_some());
+                    let Some((def, v)) = live else { continue };
+                    if response.drag_started() {
+                        self.drag = Some(Drag { block: key.clone(), param: name.clone(), start: v, up: 0.0 });
+                    }
+                    if let Some(drag) = self.drag.as_mut().filter(|d| d.block == key && &d.param == name)
+                        && response.dragged()
+                    {
+                        drag.up -= response.drag_delta().y;
+                        if let Some(next) = dragged(drag.start, def, drag.up).filter(|n| (n - v).abs() > 1e-9) {
+                            turned = Some((name.clone(), next));
+                        }
+                    }
+                    if response.drag_stopped() {
+                        self.drag = None;
+                    }
                 }
             });
         });
+        let Some((name, value)) = turned else { return };
+        if let Some(preset) = self.preset.as_mut() {
+            preset.set_param(&key, &name, serde_json::json!(value));
+        }
+        if let Some(connection) = &self.connection
+            && let Some(address) = connection.addresses.get(&key)
+            && let Some(param) = address.param(&name)
+        {
+            connection.live.set(address.slot, address.sub, param, value as f32);
+        }
     }
 }
 
@@ -205,21 +258,31 @@ fn knob_fraction(value: &serde_json::Value, def: Option<&nx_catalog::ParamDef>) 
     }
 }
 
-fn knob(ui: &mut Ui, label: &str, value: &str, fraction: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(64.0, 78.0), Sense::hover());
+/// A knob; a live one is dragged up and down to turn it.
+fn knob(ui: &mut Ui, label: &str, value: &str, fraction: f32, live: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(64.0, 78.0), if live { Sense::drag() } else { Sense::hover() });
+    let response = if live { response.on_hover_cursor(egui::CursorIcon::ResizeVertical) } else { response };
     let painter = ui.painter();
     let center = rect.center_top() + vec2(0.0, 22.0);
+    let ring = if live && (response.hovered() || response.dragged()) { theme::ACCENT } else { theme::SWITCH_OFF };
     painter.circle_filled(center, 17.0, theme::RAISED_HI);
-    painter.circle_stroke(center, 17.0, Stroke::new(2.0, theme::SWITCH_OFF));
+    painter.circle_stroke(center, 17.0, Stroke::new(2.0, ring));
     let angle = std::f32::consts::PI * (0.75 + 1.5 * fraction);
     let tip = center + vec2(angle.cos(), angle.sin()) * 13.0;
     painter.line_segment([center, tip], Stroke::new(2.0, theme::ACCENT));
     painter.text(rect.center_top() + vec2(0.0, 48.0), Align2::CENTER_CENTER, label, theme::regular(11.0), theme::TEXT_MID);
     painter.text(rect.center_top() + vec2(0.0, 63.0), Align2::CENTER_CENTER, value, theme::regular(11.0), theme::TEXT_DIM);
+    response
 }
 
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        if let Some(connection) = &self.connection {
+            if let Some(error) = connection.live.errors().pop() {
+                self.status = format!("HX Stomp: {error}");
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        }
         egui::Panel::top("top").frame(egui::Frame::new().fill(theme::PANEL).inner_margin(10)).show(ui, |ui| self.top_bar(ui));
         egui::Panel::left("browser")
             .resizable(true)

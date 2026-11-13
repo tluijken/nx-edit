@@ -101,3 +101,21 @@ fn current_snapshot_comes_from_global() {
     v["data"]["tone"]["global"]["@current_snapshot"] = serde_json::json!(2);
     assert_eq!(Preset::from_slice(&serde_json::to_vec(&v).unwrap()).unwrap().current_snapshot(), 2);
 }
+
+#[test]
+fn set_param_changes_one_block_parameter() {
+    let mut preset = Preset::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+    assert!(preset.set_param("block2", "Drive", serde_json::json!(0.5)));
+    let amp = preset.blocks().into_iter().find(|b| b.key == "block2").unwrap();
+    assert_eq!(amp.params.iter().find(|(k, _)| k == "Drive").unwrap().1, serde_json::json!(0.5));
+}
+
+#[test]
+fn set_param_ignores_unknown_blocks_parameters_and_metadata() {
+    let mut preset = Preset::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+    let before = preset.clone();
+    assert!(!preset.set_param("block99", "Drive", serde_json::json!(0.5)));
+    assert!(!preset.set_param("block2", "Nonexistent", serde_json::json!(0.5)));
+    assert!(!preset.set_param("block2", "@model", serde_json::json!("x")));
+    assert_eq!(preset, before);
+}
