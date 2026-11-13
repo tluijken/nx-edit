@@ -1,5 +1,5 @@
-//! Presets as the pedal holds them: the op-22 document plus the name from op 23, read from a capture
-//! for now (the live session comes later), and turned into an `.hlx` view for the editor.
+//! Presets as the pedal holds them: the op-22 document plus the name from op 23, read from a
+//! capture or from the pedal itself, and turned into an `.hlx` view for the editor.
 
 use std::fs::File;
 use std::path::Path;
@@ -10,6 +10,7 @@ use nx_proto::{Document, Frame, ParamValue, RPC_CHANNEL, Reassembler, Request, S
 use rmpv::Value;
 use serde_json::{Map, json};
 
+#[derive(Debug)]
 pub struct DevicePreset {
     pub name: String,
     pub document: Vec<u8>,
@@ -25,6 +26,37 @@ pub fn preset_from_capture(path: &Path) -> Result<DevicePreset, String> {
         frames.extend(split_transfer(&t.data).map_err(|e| e.to_string())?);
     }
     preset_from_frames(frames)?.ok_or_else(|| format!("{}: no preset document in this capture", path.display()))
+}
+
+/// The preset the pedal has selected now, read from a connected HX Stomp. The session is closed
+/// before this returns.
+pub fn preset_from_device() -> Result<DevicePreset, String> {
+    let transport = nx_usb::UsbTransport::open().map_err(|e| format!("HX Stomp: {e}"))?;
+    let session = nx_session::Session::connect(transport).map_err(|e| format!("HX Stomp: {e}"))?;
+    let preset = preset_from_session(&session);
+    let closed = session.close().map_err(|e| format!("HX Stomp sluiten: {e}"));
+    let preset = preset?;
+    closed?;
+    Ok(preset)
+}
+
+/// Reads only: preset info (op 23), then the document (op 22), as HX Edit does after a switch.
+pub fn preset_from_session(session: &nx_session::Session) -> Result<DevicePreset, String> {
+    let info = session.request(Request::PresetInfo).map_err(|e| format!("presetinfo: {e}"))?;
+    let document = match session.request(Request::PresetDocument).map_err(|e| format!("presetdocument: {e}"))? {
+        // The document travels as a MessagePack str, not bin, although it is not UTF-8.
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Binary(b) => b,
+        other => return Err(format!("presetdocument: onverwacht antwoord {other}")),
+    };
+    Ok(DevicePreset { name: preset_name(&info).unwrap_or_default(), document })
+}
+
+fn preset_name(info: &Value) -> Option<String> {
+    info.as_map()
+        .and_then(|m| m.iter().find(|(k, _)| k.as_u64() == Some(109)))
+        .and_then(|(_, v)| v.as_str())
+        .map(|s| s.trim_end_matches('\0').to_owned())
 }
 
 /// The last preset read in a stream of frames, if any.
@@ -52,14 +84,7 @@ fn preset_from_frames(frames: impl IntoIterator<Item = Frame>) -> Result<Option<
             match (opcode, field(104)) {
                 // The document travels as a MessagePack str, not bin, although it is not UTF-8.
                 (22, Some(Value::String(s))) => document = Some(s.as_bytes().to_vec()),
-                (23, Some(info)) => {
-                    let found = info
-                        .as_map()
-                        .and_then(|m| m.iter().find(|(k, _)| k.as_u64() == Some(109)))
-                        .and_then(|(_, v)| v.as_str())
-                        .map(|s| s.trim_end_matches('\0').to_owned());
-                    name = found.or(name);
-                }
+                (23, Some(info)) => name = preset_name(info).or(name),
                 _ => {}
             }
         }
@@ -259,5 +284,51 @@ mod tests {
     #[test]
     fn a_capture_without_a_document_is_an_error() {
         assert!(preset_from_capture(&capture("01-connect")).is_err());
+    }
+
+    fn fake_stomp(reply: impl Fn(&Request) -> nx_session::fake::Reply + Send + 'static) -> nx_session::fake::FakeDevice {
+        let device = nx_session::fake::FakeDevice::new();
+        device.strict(true);
+        device.on_request(move |_, _, req| reply(req));
+        device
+    }
+
+    #[test]
+    fn reads_the_current_preset_over_a_session() {
+        use nx_session::fake::Reply;
+        let device = fake_stomp(|req| match req {
+            Request::PresetInfo => Reply::Ok(info(Some("Revv DM"))),
+            Request::PresetDocument => Reply::Ok(Value::from("document")),
+            _ => Reply::Silent,
+        });
+        let session = nx_session::Session::connect(device.transport()).unwrap();
+        let preset = preset_from_session(&session).unwrap();
+        assert_eq!(preset.name, "Revv DM");
+        assert_eq!(preset.document, b"document");
+        let asked: Vec<u64> = device.requests().iter().map(|(_, _, r)| r.opcode()).collect();
+        assert_eq!(asked, vec![23, 22], "read only: preset info, then the document");
+    }
+
+    #[test]
+    fn a_refused_document_is_reported() {
+        use nx_session::fake::Reply;
+        let device = fake_stomp(|req| match req {
+            Request::PresetInfo => Reply::Ok(info(Some("Revv DM"))),
+            _ => Reply::Status(5, Value::Nil),
+        });
+        let session = nx_session::Session::connect(device.transport()).unwrap();
+        let err = preset_from_session(&session).unwrap_err();
+        assert!(err.contains("status 5"), "{err}");
+    }
+
+    #[test]
+    fn a_document_that_is_not_a_string_is_reported() {
+        use nx_session::fake::Reply;
+        let device = fake_stomp(|req| match req {
+            Request::PresetInfo => Reply::Ok(info(Some("Revv DM"))),
+            _ => Reply::Ok(Value::from(7)),
+        });
+        let session = nx_session::Session::connect(device.transport()).unwrap();
+        assert!(preset_from_session(&session).is_err());
     }
 }

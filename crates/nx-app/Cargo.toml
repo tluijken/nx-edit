@@ -17,3 +17,8 @@ serde_json.workspace = true
 nx-proto = { path = "../nx-proto" }
 nx-capture = { path = "../nx-capture" }
 rmpv = "1"
+nx-session = { path = "../nx-session" }
+nx-usb = { path = "../nx-usb" }
+
+[dev-dependencies]
+nx-session = { path = "../nx-session", features = ["fake"] }
