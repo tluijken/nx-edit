@@ -54,6 +54,7 @@ fn main() -> eframe::Result {
                     live: live::Live::start(session),
                     presets,
                     current: preset.index,
+                    generation: 0,
                     syms,
                 }),
                 None => None,

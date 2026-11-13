@@ -10,7 +10,7 @@ use nx_hlx::Preset;
 
 use crate::device::BlockAddress;
 use crate::layout::{Branch, Lane, Tile, branch, display_value, dragged, lanes, slot_columns};
-use crate::live::Live;
+use crate::live::{Live, Loaded, ParamChange, Update};
 use crate::theme;
 
 const GAP: f32 = 10.0;
@@ -30,6 +30,8 @@ pub struct Connection {
     pub presets: Vec<nx_proto::PresetEntry>,
     /// The place of the preset shown, as the pedal last reported it.
     pub current: Option<u64>,
+    /// The worker's generation of the preset shown; edits carry it.
+    pub generation: u64,
     /// Model names, to show a preset read after a switch.
     pub syms: nx_catalog::ModelSymbols,
 }
@@ -364,11 +366,11 @@ impl EditorApp {
         if let Some(preset) = self.preset.as_mut() {
             preset.set_param(&key, &name, serde_json::json!(value));
         }
-        if let Some(connection) = &self.connection
+        if let Some(connection) = self.live()
             && let Some(address) = connection.addresses.get(&key)
             && let Some(param) = address.param(&name)
         {
-            connection.live.set(address.slot, address.sub, param, value as f32);
+            connection.live.set(connection.generation, address.slot, address.sub, param, value as f32);
         }
     }
 
@@ -412,10 +414,13 @@ impl EditorApp {
                 }
             }
         });
-        match (pick, &self.connection) {
+        let running = self.connection.as_ref().is_some_and(|c| c.live.running());
+        match (pick, self.connection.as_mut().filter(|_| running)) {
             (Some((_, true)), _) => self.show_pedal(),
             (Some((index, false)), Some(connection)) => {
                 connection.live.select(0, index);
+                // Knobs stay read-only until the pedal reports the new preset and it is shown.
+                connection.addresses.clear();
                 self.status = format!("Switching to {}…", nx_proto::slot_label(index));
             }
             _ => {}
@@ -490,17 +495,17 @@ impl EditorApp {
         self.status = "Connected · changes not saved".to_owned();
     }
 
-    /// The connection, when what is shown is the pedal's preset; a library file never reaches it.
+    /// The connection, when what is shown is the pedal's preset and its worker still runs; a
+    /// library file never reaches it.
     fn live(&self) -> Option<&Connection> {
-        self.connection.as_ref().filter(|_| self.showing_file.is_none())
+        self.connection.as_ref().filter(|c| self.showing_file.is_none() && c.live.running())
     }
 
     fn toggle_block(&mut self, key: &str) {
         let Some(block) = self.preset.as_ref().and_then(|p| p.blocks().into_iter().find(|b| b.key == key)) else { return };
-        let Some(slot) = self.live().and_then(|c| c.addresses.get(key)).map(|a| a.slot) else { return };
-        if let Some(connection) = self.live() {
-            connection.live.set_enabled(slot, !block.enabled);
-        }
+        let Some(connection) = self.live() else { return };
+        let Some(slot) = connection.addresses.get(key).map(|a| a.slot) else { return };
+        connection.live.set_enabled(connection.generation, slot, !block.enabled);
         if let Some(preset) = self.preset.as_mut() {
             preset.set_enabled(key, !block.enabled);
         }
@@ -514,54 +519,67 @@ impl EditorApp {
         }
     }
 
-    /// Applies parameter changes the pedal reported to the preset they belong to, skipping the knob
-    /// being dragged here so its own echoes do not pull it back.
-    fn take_changes(&mut self) {
+    /// Applies what the pedal reported, in its order.
+    fn take_updates(&mut self) {
         let Some(connection) = self.connection.as_ref() else { return };
-        for change in connection.live.changes() {
-            let found = connection.addresses.iter().find(|(_, a)| a.slot == change.slot && a.sub == change.sub);
-            let Some((key, name)) = found.and_then(|(key, a)| Some((key.clone(), a.params.get(change.param as usize)?.clone()))) else { continue };
-            if self.drag.as_ref().is_some_and(|d| d.block == key && d.param == name) {
-                continue;
+        for update in connection.live.updates() {
+            match update {
+                Update::Changed(generation, change) => self.apply_change(generation, change),
+                Update::Loaded(loaded) => self.apply_loaded(loaded),
             }
-            let target = if self.showing_file.is_some() { self.pedal_preset.as_mut() } else { self.preset.as_mut() };
-            if let Some(preset) = target {
-                preset.set_param(&key, &name, serde_json::json!(change.value));
-            }
+        }
+    }
+
+    /// A parameter change reported for the preset shown, skipping the knob being dragged here so its
+    /// own echoes do not pull it back. A change from an older generation belongs to another preset.
+    fn apply_change(&mut self, generation: u64, change: ParamChange) {
+        let Some(connection) = self.connection.as_ref().filter(|c| c.generation == generation) else { return };
+        let found = connection.addresses.iter().find(|(_, a)| a.slot == change.slot && a.sub == change.sub);
+        let Some((key, name)) = found.and_then(|(key, a)| Some((key.clone(), a.params.get(change.param as usize)?.clone()))) else { return };
+        if self.drag.as_ref().is_some_and(|d| d.block == key && d.param == name) {
+            return;
+        }
+        let target = if self.showing_file.is_some() { self.pedal_preset.as_mut() } else { self.preset.as_mut() };
+        if let Some(preset) = target {
+            preset.set_param(&key, &name, serde_json::json!(change.value));
         }
     }
 
     /// Shows the preset the pedal holds after a switch, by a click here or a footswitch, or after a
     /// snapshot or block change, which keeps the selected block. While a library file is shown, only
-    /// the kept pedal preset is updated.
-    fn take_loaded(&mut self) {
+    /// the kept pedal preset is updated. A preset nx-edit cannot show leaves the knobs read-only.
+    fn apply_loaded(&mut self, loaded: Loaded) {
         let Some(connection) = self.connection.as_mut() else { return };
-        let Some(loaded) = connection.live.loaded() else { return };
+        let Loaded { generation, preset: loaded } = loaded;
         let same_preset = loaded.index.is_some() && loaded.index == connection.current;
+        connection.generation = generation;
+        connection.current = loaded.index;
         let shown = loaded.to_hlx(&connection.syms).and_then(|hlx| Ok((hlx, loaded.addresses(&connection.syms)?)));
-        match shown {
-            Ok((hlx, addresses)) => {
-                connection.addresses = addresses;
-                connection.current = loaded.index;
-                if let Some(entry) = connection.presets.iter_mut().find(|p| Some(p.index) == loaded.index) {
-                    entry.name = loaded.name.clone();
-                }
-                if self.showing_file.is_some() && same_preset {
-                    self.pedal_preset = Some(hlx);
-                    return;
-                }
-                let keep = same_preset && self.selected_block.as_ref().is_some_and(|k| hlx.blocks().iter().any(|b| &b.key == k));
-                if !keep {
-                    self.selected_block = hlx.blocks().first().map(|b| b.key.clone());
-                    self.drag = None;
-                }
-                self.preset = Some(hlx);
-                self.showing_file = None;
-                self.pedal_preset = None;
-                self.status = "Connected · changes not saved".to_owned();
+        let (hlx, addresses) = match shown {
+            Ok(shown) => shown,
+            Err(e) => {
+                connection.addresses.clear();
+                self.status = format!("HX Stomp: {e}; knobs are read-only");
+                return;
             }
-            Err(e) => self.status = format!("HX Stomp: {e}"),
+        };
+        connection.addresses = addresses;
+        if let Some(entry) = connection.presets.iter_mut().find(|p| Some(p.index) == loaded.index) {
+            entry.name = loaded.name.clone();
         }
+        if self.showing_file.is_some() && same_preset {
+            self.pedal_preset = Some(hlx);
+            return;
+        }
+        let keep = same_preset && self.selected_block.as_ref().is_some_and(|k| hlx.blocks().iter().any(|b| &b.key == k));
+        if !keep {
+            self.selected_block = hlx.blocks().first().map(|b| b.key.clone());
+            self.drag = None;
+        }
+        self.preset = Some(hlx);
+        self.showing_file = None;
+        self.pedal_preset = None;
+        self.status = "Connected · changes not saved".to_owned();
     }
 
     fn snapshots(&mut self, ui: &mut Ui) {
@@ -882,8 +900,7 @@ fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, c
 
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        self.take_loaded();
-        self.take_changes();
+        self.take_updates();
         if let Some(connection) = &self.connection {
             if let Some(error) = connection.live.errors().pop() {
                 self.status = format!("HX Stomp: {error}");
