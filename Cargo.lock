@@ -2471,6 +2471,7 @@ dependencies = [
  "nx-capture",
  "nx-catalog",
  "nx-customtone",
+ "nx-device",
  "nx-hlx",
  "nx-proto",
  "nx-session",
@@ -2504,6 +2505,20 @@ dependencies = [
  "scraper",
  "thiserror 2.0.21",
  "ureq",
+]
+
+[[package]]
+name = "nx-device"
+version = "0.1.0"
+dependencies = [
+ "nx-capture",
+ "nx-catalog",
+ "nx-hlx",
+ "nx-proto",
+ "nx-session",
+ "nx-usb",
+ "rmpv",
+ "serde_json",
 ]
 
 [[package]]
