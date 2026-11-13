@@ -381,3 +381,14 @@ fn close_still_ends_events_when_control_does_not_answer() {
     assert!(matches!(session.close(), Err(Error::Timeout(_))));
     assert_eq!(device.closes(), vec![0x1001, 0x1001, 0x1002]);
 }
+
+#[test]
+fn notification_20_before_its_status_1_reply_still_completes_the_request() {
+    let device = FakeDevice::new();
+    device.on_request(|_, _, _| Reply::DoneBeforeReply(Value::from("done")));
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    let started = Instant::now();
+    assert_eq!(session.request(Request::SelectPreset { setlist: 0, index: 2 }).unwrap(), Value::from("done"));
+    assert!(started.elapsed() < config().reply_timeout);
+    assert_eq!(session.request(Request::PresetInfo).unwrap(), Value::from("done"));
+}

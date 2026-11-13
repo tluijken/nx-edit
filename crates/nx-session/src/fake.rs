@@ -33,6 +33,8 @@ pub enum Reply {
     Late(Duration),
     /// Status 1 (accepted, deferred) after this delay.
     LateDeferred(Duration),
+    /// Notification 20 with status 0 and this result, and only then the status 1 reply.
+    DoneBeforeReply(Value),
 }
 
 type Handler = Box<dyn FnMut(Channel, u64, &Request) -> Reply + Send>;
@@ -384,6 +386,12 @@ impl State {
             Reply::Silent => {}
             Reply::Late(after) => self.scheduled.push((Instant::now() + after, channel, reply(0, Value::from(txn)))),
             Reply::LateDeferred(after) => self.scheduled.push((Instant::now() + after, channel, reply(1, Value::Nil))),
+            Reply::DoneBeforeReply(result) => {
+                let done = map(vec![(102, Value::from(txn)), (103, Value::from(0u64)), (104, result)]);
+                self.events.push_back(encode(&map(vec![(105, Value::from(20u64)), (106, done)])));
+                self.send_events();
+                self.send_message(channel, &reply(1, Value::Nil));
+            }
         }
     }
 }

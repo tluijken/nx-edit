@@ -38,6 +38,8 @@ struct Inflight {
     txn: u64,
     reply: Reply,
     deadline: Instant,
+    /// Notification 20 for this transaction, if it overtook the status 1 reply.
+    done_early: Option<Result<Value, Error>>,
 }
 
 struct Deferred {
@@ -196,10 +198,16 @@ impl<T: Transport> Engine<T> {
         let Some(inflight) = self.inflight[i].take_if(|f| f.txn == txn) else { return };
         match status {
             0 => _ = inflight.reply.send(Ok(result)),
-            1 => {
-                self.deferred =
-                    Some(Deferred { txn, reply: inflight.reply, deadline: Instant::now() + self.config.deferred_timeout })
-            }
+            1 => match inflight.done_early {
+                Some(outcome) => _ = inflight.reply.send(outcome),
+                None => {
+                    self.deferred = Some(Deferred {
+                        txn,
+                        reply: inflight.reply,
+                        deadline: Instant::now() + self.config.deferred_timeout,
+                    })
+                }
+            },
             status => _ = inflight.reply.send(Err(Error::Status { status, result })),
         }
     }
@@ -207,11 +215,20 @@ impl<T: Transport> Engine<T> {
     fn on_deferred_done(&mut self, data: &Value) {
         let Some(map) = data.as_map() else { return };
         let Some(txn) = get(map, TXN).and_then(Value::as_u64) else { return };
-        let Some(deferred) = self.deferred.take_if(|d| d.txn == txn) else { return };
         let status = get(map, STATUS).and_then(Value::as_u64).unwrap_or(0);
         let result = get(map, RESULT).cloned().unwrap_or(Value::Nil);
         let outcome = if status == 0 { Ok(result) } else { Err(Error::Status { status, result }) };
-        _ = deferred.reply.send(outcome);
+        match self.deferred.take_if(|d| d.txn == txn) {
+            Some(deferred) => _ = deferred.reply.send(outcome),
+            // The notification can overtake the status 1 reply on another channel; the reply then
+            // completes the request at once. Either channel's request may carry the id, and only
+            // the one that gets status 1 uses it.
+            None => {
+                for f in self.inflight.iter_mut().flatten().filter(|f| f.txn == txn) {
+                    f.done_early = Some(outcome.clone());
+                }
+            }
+        }
     }
 
     fn on_device_closed(&mut self, channel: Channel) {
@@ -395,7 +412,12 @@ impl<T: Transport> Engine<T> {
             self.next_txn[c] += 1;
             let msg = message(self.service[c], &job.request.encode(txn));
             self.queue_bytes(channel, &msg);
-            self.inflight[c] = Some(Inflight { txn, reply: job.reply, deadline: Instant::now() + self.config.reply_timeout });
+            self.inflight[c] = Some(Inflight {
+                txn,
+                reply: job.reply,
+                deadline: Instant::now() + self.config.reply_timeout,
+                done_early: None,
+            });
             self.flush_outbox(channel)?;
         }
         Ok(())

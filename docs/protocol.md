@@ -325,7 +325,9 @@ reply means accepted: the operation completes with notification 20 carrying the 
 id [seen, `02`: status 1 at 16.7391 s, notification 20 at 16.7396 s, next request only after both].
 Until it arrives `nx-session` sends no request on any channel [map: racing a running commit wedges
 the device; HX Edit waits]. Notification 20 is matched against the one deferred operation in
-flight, which also resolves the ambiguity of the two channels' overlapping transaction ids.
+flight, which also resolves the ambiguity of the two channels' overlapping transaction ids. A
+notification 20 that overtakes the status 1 reply (they travel on different channels) is kept with
+the request in flight that has its transaction id, and the status 1 reply then completes it at once.
 
 **A timeout leaves the device's state unknown** [rule]. A reply that arrives after its request
 was given up on may be status 1, after which the device commits while the host believes nothing
