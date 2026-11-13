@@ -287,3 +287,49 @@ mod tests {
         assert_eq!(ts.category.as_deref(), Some("Distortion"));
     }
 }
+
+#[cfg(test)]
+mod pedal_tests {
+    use std::path::PathBuf;
+
+    use nx_catalog::ModelSymbols;
+    use nx_device::device::DevicePreset;
+
+    use super::*;
+
+    fn captured() -> DevicePreset {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/02-select-preset-01C.doc");
+        DevicePreset { name: "Revv DM".into(), index: Some(2), document: std::fs::read(path).unwrap() }
+    }
+
+    fn fixture() -> Preset {
+        Preset::from_slice(include_bytes!("../../nx-hlx/tests/fixtures/Revv_DM.hlx")).unwrap()
+    }
+
+    fn helix_sym() -> Option<ModelSymbols> {
+        let dir = std::env::var_os("NX_HXEDIT_RES").map(PathBuf::from).unwrap_or_else(nx_catalog::default_res_dir);
+        let path = dir.join("Helix.sym");
+        if !path.exists() {
+            eprintln!("skipped: no Helix.sym in {} (set NX_HXEDIT_RES)", dir.display());
+            return None;
+        }
+        Some(ModelSymbols::load(&path).unwrap())
+    }
+
+    #[test]
+    fn converted_capture_lays_out_like_the_hlx() {
+        let Some(syms) = helix_sym() else { return };
+        let converted = captured().to_hlx(&syms).unwrap();
+        assert_eq!(lanes(&converted, None), lanes(&fixture(), None));
+    }
+
+    #[test]
+    fn converted_snapshots_switch_like_the_hlx() {
+        let Some(syms) = helix_sym() else { return };
+        let mut converted = captured().to_hlx(&syms).unwrap();
+        let mut want = fixture();
+        converted.select_snapshot(2);
+        want.select_snapshot(2);
+        assert_eq!(lanes(&converted, None), lanes(&want, None));
+    }
+}

@@ -260,7 +260,6 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::layout::lanes;
 
     fn capture(name: &str) -> Option<PathBuf> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../local/captures").join(format!("{name}.pcapng"));
@@ -325,13 +324,6 @@ mod tests {
     }
 
     #[test]
-    fn converted_capture_lays_out_like_the_hlx() {
-        let Some(syms) = helix_sym() else { return };
-        let converted = captured("02-select-preset-01C").to_hlx(&syms).unwrap();
-        assert_eq!(lanes(&converted, None), lanes(&fixture(), None));
-    }
-
-    #[test]
     fn converted_capture_keeps_the_active_snapshot() {
         let Some(syms) = helix_sym() else { return };
         let lead = captured("05-snapshot-switch").to_hlx(&syms).unwrap();
@@ -375,16 +367,6 @@ mod tests {
                 assert_eq!(converted[format!("snapshot{i}")][key], want[format!("snapshot{i}")][key], "snapshot{i} {key}");
             }
         }
-    }
-
-    #[test]
-    fn converted_snapshots_switch_like_the_hlx() {
-        let Some(syms) = helix_sym() else { return };
-        let mut converted = captured("02-select-preset-01C").to_hlx(&syms).unwrap();
-        let mut want = fixture();
-        converted.select_snapshot(2);
-        want.select_snapshot(2);
-        assert_eq!(lanes(&converted, None), lanes(&want, None));
     }
 
     fn message(from_host: bool, body: &Value) -> Frame {

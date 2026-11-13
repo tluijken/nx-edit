@@ -1,13 +1,13 @@
 mod account;
 mod cli;
 mod customtone;
-mod device;
 mod history;
 mod layout;
 mod library;
-mod live;
 mod theme;
 mod view;
+
+use nx_device::{device, live};
 
 enum Source {
     Capture(std::path::PathBuf),

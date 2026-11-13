@@ -1,0 +1,18 @@
+[package]
+name = "nx-device"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nx-hlx = { path = "../nx-hlx" }
+nx-catalog = { path = "../nx-catalog" }
+nx-proto = { path = "../nx-proto" }
+nx-capture = { path = "../nx-capture" }
+nx-session = { path = "../nx-session" }
+nx-usb = { path = "../nx-usb" }
+rmpv = "1"
+serde_json.workspace = true
+
+[dev-dependencies]
+nx-session = { path = "../nx-session", features = ["fake"] }
