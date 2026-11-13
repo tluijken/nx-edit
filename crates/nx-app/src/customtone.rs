@@ -38,6 +38,7 @@ pub struct CustomToneView {
     error: Option<String>,
     open: Option<u64>,
     started: bool,
+    signing_in: bool,
 }
 
 impl Default for CustomToneView {
@@ -55,6 +56,7 @@ impl Default for CustomToneView {
             error: None,
             open: None,
             started: false,
+            signing_in: false,
         }
     }
 }
@@ -76,6 +78,7 @@ impl CustomToneView {
     }
 
     fn sign_in(&mut self, ctx: &egui::Context, user: String, password: String, remember: bool) {
+        self.signing_in = true;
         self.spawn(ctx, move |client| {
             let outcome = client.sign_in(&user, &password).map_err(|e| e.to_string());
             let outcome = match outcome {
@@ -90,6 +93,9 @@ impl CustomToneView {
         let replies: Vec<Reply> = self.replies.1.try_iter().collect();
         for reply in replies {
             self.busy = self.busy.saturating_sub(1);
+            if matches!(reply, Reply::SignedIn { .. }) {
+                self.signing_in = false;
+            }
             match reply {
                 Reply::Page(Ok((page, account))) => {
                     self.query.page = page.page;
@@ -125,18 +131,21 @@ impl CustomToneView {
             self.toolbar(ui);
             ui.add_space(6.0);
             self.account_line(ui);
-            if self.form.is_some() {
-                self.sign_in_form(ui);
-            }
             ui.add_space(10.0);
             if let Some(error) = &self.error {
                 ui.label(RichText::new(error).color(theme::ACCENT));
             }
             if self.busy > 0 {
-                ui.label(RichText::new("Loading…").color(theme::TEXT_DIM));
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(14.0).color(theme::ACCENT));
+                    ui.label(RichText::new("Loading…").color(theme::TEXT_DIM));
+                });
             }
             self.list(ui);
         });
+        if self.form.is_some() {
+            self.sign_in_modal(ui.ctx());
+        }
     }
 
     fn account_line(&mut self, ui: &mut Ui) {
@@ -165,39 +174,72 @@ impl CustomToneView {
         });
     }
 
-    fn sign_in_form(&mut self, ui: &mut Ui) {
+    /// The sign-in form as a modal over the view; while the site answers it shows a spinner and
+    /// takes no input.
+    fn sign_in_modal(&mut self, ctx: &egui::Context) {
+        let signing_in = self.signing_in;
+        let error = self.error.clone();
         let Some(form) = self.form.as_mut() else { return };
         let mut submit = None;
         let mut cancel = false;
-        ui.add_space(8.0);
-        Frame::new().fill(theme::RAISED).corner_radius(CornerRadius::same(14)).inner_margin(Margin::same(14)).show(ui, |ui| {
-            ui.label(RichText::new("Sign in to line6.com").font(theme::semibold(14.0)));
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
-                ui.add(egui::TextEdit::singleline(&mut form.user).hint_text("E-mail or user name").desired_width(220.0));
-                let password = ui.add(egui::TextEdit::singleline(&mut form.password).password(true).hint_text("Password").desired_width(180.0));
-                ui.checkbox(&mut form.remember, "Remember (Secret Service)");
+        let frame = Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(18)).inner_margin(Margin::same(24));
+        let modal = egui::Modal::new(egui::Id::unique("line6-sign-in")).frame(frame).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.spacing_mut().item_spacing.y = 12.0;
+            ui.label(RichText::new("Sign in to line6.com").font(theme::semibold(20.0)));
+            ui.label(RichText::new("For CustomTone downloads. The password is sent to line6.com only.").font(theme::regular(13.0)).color(theme::TEXT_DIM));
+            let field = || Frame::new().fill(theme::BG).corner_radius(CornerRadius::same(12)).inner_margin(Margin::symmetric(14, 12));
+            ui.add_enabled_ui(!signing_in, |ui| {
+                field().show(ui, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut form.user).hint_text("E-mail or user name").font(theme::regular(16.0)).frame(Frame::NONE).desired_width(f32::INFINITY));
+                });
+                let password = field()
+                    .show(ui, |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut form.password).password(true).hint_text("Password").font(theme::regular(16.0)).frame(Frame::NONE).desired_width(f32::INFINITY))
+                    })
+                    .inner;
+                ui.checkbox(&mut form.remember, RichText::new("Remember me (password in the desktop keyring)").font(theme::regular(14.0)));
                 let enter = password.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let ready = !form.user.trim().is_empty() && !form.password.is_empty();
-                if (ui.add_enabled(ready, egui::Button::new("Sign in")).clicked() || enter) && ready {
+                if enter && ready {
                     submit = Some((form.user.trim().to_owned(), form.password.clone(), form.remember));
                 }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
+                ui.horizontal(|ui| {
+                    let sign_in = egui::Button::new(RichText::new("Sign in").font(theme::semibold(15.0)).color(theme::BG))
+                        .fill(theme::ACCENT)
+                        .corner_radius(CornerRadius::same(255))
+                        .min_size(vec2(120.0, 40.0));
+                    if ui.add_enabled(ready, sign_in).clicked() {
+                        submit = Some((form.user.trim().to_owned(), form.password.clone(), form.remember));
+                    }
+                    let cancel_button = egui::Button::new(RichText::new("Cancel").font(theme::semibold(15.0))).corner_radius(CornerRadius::same(255)).min_size(vec2(100.0, 40.0));
+                    if ui.add(cancel_button).clicked() {
+                        cancel = true;
+                    }
+                });
             });
+            if signing_in {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(18.0).color(theme::ACCENT));
+                    ui.label(RichText::new("Signing in…").font(theme::regular(14.0)).color(theme::TEXT_MID));
+                });
+            } else if let Some(error) = error {
+                ui.label(RichText::new(error).font(theme::regular(14.0)).color(theme::ACCENT));
+            }
         });
+        if modal.should_close() && !signing_in {
+            cancel = true;
+        }
         if cancel {
             self.form = None;
+            self.error = None;
         } else if let Some((user, password, remember)) = submit {
             if let Some(form) = self.form.as_mut() {
                 form.password.clear();
             }
-            self.sign_in(ui.ctx(), user, password, remember);
+            self.sign_in(ctx, user, password, remember);
         }
     }
-
 
     fn toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
