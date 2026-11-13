@@ -1,7 +1,7 @@
 //! First write to a real HX Stomp: on preset "Revv DM", turn the amp's Drive up a little with the
 //! requests HX Edit sent in capture 03, read it back, wait, and turn it back. Nothing is saved.
 //!
-//! cargo run -p nx-usb --example drive -- <log dir>
+//! cargo run -p nx-usb --example drive -- <log dir> [seconds to hold]
 
 mod common;
 
@@ -50,6 +50,7 @@ fn set_drive(session: &Session, value: f32) -> Result<()> {
 
 fn main() -> Result<()> {
     let dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "local/live/drive".into()));
+    let hold: u64 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(8);
     fs::create_dir_all(&dir)?;
     let transport = Logged::new(UsbTransport::open()?, File::create(dir.join("transfers.log"))?);
     let session = Session::connect(transport)?;
@@ -76,8 +77,8 @@ fn main() -> Result<()> {
         if (now - raised).abs() > 1e-4 { Err(format!("read back {now}, expected {raised}").into()) } else { Ok(()) }
     });
     if outcome.is_ok() {
-        println!("  holding 8 s: check the Stomp");
-        thread::sleep(Duration::from_secs(8));
+        println!("  holding {hold} s: check the Stomp");
+        thread::sleep(Duration::from_secs(hold));
     }
 
     set_drive(&session, original)?;
