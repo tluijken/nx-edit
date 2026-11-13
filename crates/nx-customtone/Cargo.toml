@@ -1,0 +1,10 @@
+[package]
+name = "nx-customtone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scraper = "0.29.0"
+thiserror.workspace = true
+ureq = "3.5.2"
