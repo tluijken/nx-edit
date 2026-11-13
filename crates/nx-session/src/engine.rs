@@ -345,7 +345,7 @@ impl<T: Transport> Engine<T> {
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
-                        _ = self.flush_acks();
+                        _ = self.close();
                         self.fail_all(Error::SessionClosed);
                         return;
                     }
@@ -478,18 +478,45 @@ impl<T: Transport> Engine<T> {
     /// HX Edit's quit in `06-reconnect`: control, then events, each answered by the device; the
     /// RPC channel was left open and the next connect opened it again without trouble [seen].
     fn close(&mut self) -> Result<(), Error> {
+        for job in self.queue.drain(..) {
+            _ = job.reply.send(Err(Error::SessionClosed));
+        }
+        // Closing under a running operation would race it; each wait is bounded by its deadline,
+        // and one that expires poisons the session instead.
+        while self.inflight.iter().any(Option::is_some) || self.deferred.is_some() {
+            for channel in Channel::ALL {
+                self.flush_outbox(channel)?;
+            }
+            self.timers()?;
+            self.pump(self.config.poll)?;
+        }
         // Let notifications that are already on their way arrive and be acknowledged.
         let settle = Instant::now() + self.config.ack_delay;
         while Instant::now() < settle {
             self.pump(self.config.poll)?;
         }
         self.flush_acks()?;
+        self.close_channels()
+    }
+
+    /// Closes control and events if the device holds them open; one that does not answer does not
+    /// keep the other open. Reports the first failure.
+    fn close_channels(&mut self) -> Result<(), Error> {
+        let mut outcome = Ok(());
         for channel in [Channel::Control, Channel::Events] {
-            if self.links[channel.index()].state == LinkState::Open {
-                self.close_channel(channel)?;
+            if matches!(self.links[channel.index()].state, LinkState::Hello | LinkState::ServiceSent | LinkState::Open) {
+                let closed = self.close_channel(channel);
+                if outcome.is_ok() {
+                    outcome = closed;
+                }
             }
         }
-        Ok(())
+        outcome
+    }
+
+    /// After a failed handshake: leaves the device as HX Edit's quit would.
+    pub fn abandon(&mut self) {
+        _ = self.close_channels();
     }
 
     fn fail_all(&mut self, error: Error) {

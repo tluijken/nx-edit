@@ -341,10 +341,15 @@ data. The caller ends the session and connects again.
 
 HX Edit's quit in `06` (0-11 s): close `0x1001`, device answers; about 0.5 s later close `0x1002`,
 device answers; `0x1080` is left open (the device kept sending keep-alives on it until reads
-stopped). The next connect worked. `Session::close` does the same after acknowledging what
-arrived. The map reports that closing every channel kept an HX Stomp's next session from opening;
+stopped). The next connect worked, re-opening `0x1080` with a HELLO. `Session::close` does the same
+after waiting for a running request or deferred operation (up to its timeout, which poisons the
+session) and acknowledging what arrived; if control does not answer its close, events is still
+closed. The map reports that closing every channel kept an HX Stomp's next session from opening;
 our capture shows HX Edit closing two of three and the device fine afterwards. Dropping a `Session`
-only acknowledges and stops, without closing.
+runs the same close, bounded by the sum of the reply, deferred and two handshake timeouts; a
+session thread still busy after that is left to finish on its own. A handshake that fails closes
+whatever control and events channels the device had answered HELLO on, the same way, and is not
+retried.
 
 ## Open questions
 

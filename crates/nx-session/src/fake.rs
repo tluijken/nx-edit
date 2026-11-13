@@ -65,6 +65,8 @@ struct State {
     ignore_hello: bool,
     wedged: bool,
     withhold_acks: bool,
+    refused_services: Vec<u8>,
+    ignored_closes: Vec<Channel>,
 }
 
 struct Shared {
@@ -116,6 +118,8 @@ impl FakeDevice {
             ignore_hello: false,
             wedged: false,
             withhold_acks: false,
+            refused_services: Vec::new(),
+            ignored_closes: Vec::new(),
         };
         Self(Arc::new(Shared { state: Mutex::new(state), wake: Condvar::new() }))
     }
@@ -156,6 +160,16 @@ impl FakeDevice {
         }
         drop(st);
         self.changed();
+    }
+
+    /// Leaves opens of `service` unanswered.
+    pub fn refuse_service(&self, service: u8) {
+        self.lock().refused_services.push(service);
+    }
+
+    /// Leaves the host's close of `channel` unanswered (it is still recorded).
+    pub fn ignore_close(&self, channel: Channel) {
+        self.lock().ignored_closes.push(channel);
     }
 
     /// Answers HELLO with a bare acknowledgement, like a device left wedged by an earlier client.
@@ -302,6 +316,9 @@ impl State {
             }
             Some(FrameKind::Close) => {
                 self.closes.push(frame.src);
+                if self.ignored_closes.contains(&channel) {
+                    return;
+                }
                 let f = self.frame(channel, FrameKind::Close, &[]);
                 self.links[i].open = false;
                 self.out.push_back((f.encode(), false));
@@ -345,6 +362,9 @@ impl State {
             self.links[i].awaiting_service = false;
             self.links[i].service = service;
             self.service_opens.push((channel.host_id(), service));
+            if self.refused_services.contains(&service) {
+                return;
+            }
             self.send_message(channel, &[service]);
             return;
         }

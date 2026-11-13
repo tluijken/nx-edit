@@ -320,3 +320,64 @@ fn the_unsent_rest_of_a_timed_out_request_is_dropped() {
     thread::sleep(Duration::from_millis(50));
     assert_eq!(rpc_payload_bytes(&device), sent, "the window opened, but nothing more may go out");
 }
+
+#[test]
+fn a_handshake_that_fails_after_opening_channels_closes_them_like_hx_edit() {
+    let device = FakeDevice::new();
+    device.refuse_service(2);
+    assert!(matches!(Session::connect_with(device.transport(), config()), Err(Error::Timeout(_))));
+    // The probe's close, then control and events as HX Edit quits; 0x1080 stays open.
+    assert_eq!(device.closes(), vec![0x1001, 0x1001, 0x1002]);
+    assert_eq!(device.hellos(), vec![0x1001, 0x1080, 0x1002, 0x1001], "no retry");
+}
+
+#[test]
+fn dropping_a_session_closes_like_hx_edit() {
+    let device = FakeDevice::new();
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    device.notify(30, Value::Nil);
+    thread::sleep(Duration::from_millis(30));
+    drop(session);
+    assert_eq!(device.closes(), vec![0x1001, 0x1001, 0x1002]);
+    assert_eq!(device.events_unacked(), 0);
+}
+
+#[test]
+fn close_waits_for_a_running_deferred_operation() {
+    let device = FakeDevice::new();
+    device.on_request(|_, _, _| Reply::Deferred);
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    let pending = session.send(Channel::Rpc, Request::SelectPreset { setlist: 0, index: 2 });
+    wait_for("the select", || device.requests().len() == 1);
+    thread::sleep(Duration::from_millis(20));
+    let closing = thread::spawn(move || session.close());
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(device.closes(), vec![0x1001], "nothing is closed while the device commits");
+    device.complete_deferred(1000, 0, Value::Nil);
+    closing.join().unwrap().unwrap();
+    assert_eq!(pending.wait().unwrap(), Value::Nil);
+    assert_eq!(device.closes(), vec![0x1001, 0x1001, 0x1002]);
+}
+
+#[test]
+fn close_waits_for_a_deferred_operation_no_longer_than_its_timeout() {
+    let device = FakeDevice::new();
+    device.on_request(|_, _, _| Reply::Deferred);
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    let pending = session.send(Channel::Rpc, Request::SelectPreset { setlist: 0, index: 2 });
+    wait_for("the select", || device.requests().len() == 1);
+    let started = Instant::now();
+    session.close().unwrap();
+    assert!(started.elapsed() < config().deferred_timeout + Duration::from_secs(1));
+    assert!(matches!(pending.wait(), Err(Error::Timeout(_))));
+    assert_eq!(device.closes(), vec![0x1001, 0x1001, 0x1002]);
+}
+
+#[test]
+fn close_still_ends_events_when_control_does_not_answer() {
+    let device = FakeDevice::new();
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    device.ignore_close(Channel::Control);
+    assert!(matches!(session.close(), Err(Error::Timeout(_))));
+    assert_eq!(device.closes(), vec![0x1001, 0x1001, 0x1002]);
+}
