@@ -46,14 +46,42 @@
         '';
         meta.mainProgram = "nx-edit";
       };
-    in {
-      packages.${system}.default = nx-edit;
-      apps.${system}.default = { type = "app"; program = "${nx-edit}/bin/nx-edit"; };
-      devShells.${system}.default = pkgs.mkShell {
-        packages = with pkgs; [ cargo rustc clippy rustfmt rust-analyzer pkg-config p7zip ];
-        shellHook = ''
-          export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath runtimeLibs}
+      win = pkgs.pkgsCross.mingwW64;
+      nx-edit-windows = win.rustPlatform.buildRustPackage {
+        pname = "nx-edit-windows";
+        version = "0.1.0";
+        src = pkgs.lib.cleanSource ./.;
+        cargoLock.lockFile = ./Cargo.lock;
+        cargoBuildFlags = [ "-p" "nx-app" ];
+        buildInputs = [ win.windows.pthreads ];
+        nativeBuildInputs = [ pkgs.zip ];
+        doCheck = false;
+        postInstall = ''
+          mkdir -p nx-edit
+          cp $out/bin/nx-edit.exe LICENSE nx-edit/
+          zip -r $out/nx-edit-windows-x86_64.zip nx-edit
         '';
+      };
+    in {
+      packages.${system} = {
+        default = nx-edit;
+        windows = nx-edit-windows;
+      };
+      apps.${system}.default = { type = "app"; program = "${nx-edit}/bin/nx-edit"; };
+      devShells.${system} = {
+        default = pkgs.mkShell {
+          packages = with pkgs; [ cargo rustc clippy rustfmt rust-analyzer pkg-config p7zip ];
+          shellHook = ''
+            export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath runtimeLibs}
+          '';
+        };
+        windows = win.mkShell {
+          nativeBuildInputs = [ win.buildPackages.cargo win.buildPackages.rustc pkgs.wineWow64Packages.stable ];
+          buildInputs = [ win.windows.pthreads ];
+          CARGO_BUILD_TARGET = "x86_64-pc-windows-gnu";
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "${win.stdenv.cc.targetPrefix}cc";
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER = "wine";
+        };
       };
     };
 }

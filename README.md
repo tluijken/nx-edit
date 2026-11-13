@@ -38,27 +38,41 @@ nix run ~/projects/prive/nx-edit
 
 for Nix. To install it, add the flake as an input and use `packages.x86_64-linux.default`; the
 package includes a desktop entry and an icon.
-desktop entry and an icon.
 
 Block and parameter names come from HX Edit's own model data, which nx-edit does not ship. Import
-it once from the official Windows installer; nx-edit unpacks it with 7-Zip and runs nothing:
+it once, either from the official Windows installer, which nx-edit unpacks with 7-Zip without
+running it, or from an installed HX Edit, by passing its folder (the one that holds `res`) or the
+`res` folder itself:
 
 ```sh
 nx-edit --import-hxedit "HX Edit v3.82 Installer.exe"
+nx-edit --import-hxedit "<HX Edit folder>"
 ```
 
 The data lands in `$XDG_DATA_HOME/nx-edit/hxedit-res` and the preset library in
-`$XDG_DATA_HOME/nx-edit/library`.
+`$XDG_DATA_HOME/nx-edit/library` (`%APPDATA%\nx-edit\hxedit-res` and `%APPDATA%\nx-edit\library` on
+Windows).
 
 ```
 nx-edit [preset.hlx]                      open the editor, optionally with a library preset
 nx-edit --from-device                     connect to the pedal and open its current preset
 nx-edit --from-capture <capture.pcapng>   show the preset found in a USB capture
-nx-edit --import-hxedit <installer.exe>   import HX Edit's model data
+nx-edit --import-hxedit <installer.exe | HX Edit folder>   import HX Edit's model data
 ```
 
 Your user needs access to the pedal's USB device (vendor `0e41`, HX Stomp `0e41:4246`), for example
 through a udev rule. While the pedal is passed through to a VM, nx-edit cannot reach it.
+
+### Windows
+
+```sh
+nix build .#windows
+```
+
+cross-compiles `nx-edit.exe` with MinGW and leaves `result/nx-edit-windows-x86_64.zip`. Unzip it
+anywhere; there is no installer. The Line 6 password is kept in the Windows Credential Manager.
+nx-edit uses the USB driver HX Edit installed and does not install one itself; HX Edit must be
+closed while nx-edit talks to the pedal.
 
 ## Development
 
@@ -69,6 +83,12 @@ nix develop -c cargo run -p nx-app
 
 The dev shell sets `LD_LIBRARY_PATH` for the libraries eframe loads at runtime. UI tests run
 headless with `egui_kittest`.
+
+The `windows` dev shell builds for `x86_64-pc-windows-gnu` and runs the tests under Wine:
+
+```sh
+WINEPREFIX=$PWD/target/wine nix develop .#windows -c cargo test --workspace
+```
 
 | crate | role |
 |---|---|
