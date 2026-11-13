@@ -6,6 +6,8 @@ use nx_hlx::Preset;
 pub struct Lane {
     pub path: u8,
     pub tiles: Vec<Tile>,
+    /// The jack this lane ends in, as the pedal labels it.
+    pub output: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -19,7 +21,7 @@ pub struct Tile {
 }
 
 pub fn lanes(preset: &Preset, catalog: Option<&Catalog>) -> Vec<Lane> {
-    let mut lanes = vec![Lane { path: 0, tiles: Vec::new() }];
+    let mut lanes = vec![Lane { path: 0, tiles: Vec::new(), output: "Main L/R" }];
     for block in preset.blocks() {
         let tile = Tile {
             label: catalog
@@ -37,10 +39,16 @@ pub fn lanes(preset: &Preset, catalog: Option<&Catalog>) -> Vec<Lane> {
             lanes[0].tiles.push(tile);
         } else {
             if lanes.len() < 2 {
-                lanes.push(Lane { path: 1, tiles: Vec::new() });
+                lanes.push(Lane { path: 1, tiles: Vec::new(), output: "Main L/R" });
             }
             lanes[1].tiles.push(tile);
         }
+    }
+    // The .hlx view carries no output routing; a send block on path B stands for the Send output.
+    if let Some(below) = lanes.get_mut(1)
+        && preset.blocks().iter().any(|b| b.path == 1 && b.model.starts_with("HD2_Send"))
+    {
+        below.output = "Send";
     }
     lanes
 }
@@ -108,6 +116,13 @@ mod tests {
         assert_eq!(lanes.len(), 2);
         assert_eq!(labels(&lanes[1]), vec!["HD2_CabMicIr_4x12CaliV30", "HD2_SendMono1"]);
         assert_eq!(lanes[1].path, 1);
+    }
+
+    #[test]
+    fn each_lane_names_the_output_it_feeds() {
+        let dm = lanes(&preset("Revv_DM.hlx"), None);
+        assert_eq!(dm.iter().map(|l| l.output).collect::<Vec<_>>(), vec!["Main L/R", "Send"]);
+        assert_eq!(lanes(&preset("Revv_Home.hlx"), None)[0].output, "Main L/R");
     }
 
     #[test]

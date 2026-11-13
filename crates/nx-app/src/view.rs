@@ -8,7 +8,12 @@ use crate::layout::{Tile, branch, display_value, lanes};
 use crate::theme;
 
 const TILE: egui::Vec2 = vec2(96.0, 56.0);
+/// Tiles narrow down to this to keep the outputs in view; below it the path scrolls.
+const MIN_TILE_WIDTH: f32 = 76.0;
 const GAP: f32 = 22.0;
+/// How far path B sits right of its slots, so the wire from the split has room to bend.
+const BRANCH_INSET: f32 = 28.0;
+const OUTPUT: egui::Vec2 = vec2(84.0, 28.0);
 
 pub struct EditorApp {
     preset: Option<Preset>,
@@ -79,26 +84,44 @@ impl EditorApp {
             return;
         };
         let lanes = lanes(preset, self.catalog.as_ref());
-        let has_send = preset.blocks().iter().any(|b| b.model.starts_with("HD2_Send"));
-        let origin = ui.max_rect().left_top() + vec2(16.0, 24.0);
-        let painter = ui.painter().clone();
+        let rejoins = lanes.get(1).is_some_and(|l| l.output == lanes[0].output);
+        let tail = if lanes.len() > 1 { BRANCH_INSET } else { 0.0 };
+        let last = lanes.iter().flat_map(|l| &l.tiles).map(|t| t.position).max().map_or(0.0, |p| f32::from(p) + 1.0);
+        let fixed = 16.0 + tail + OUTPUT.x + 24.0;
+        let width = ((ui.available_width() - fixed) / last.max(1.0) - GAP).clamp(MIN_TILE_WIDTH, TILE.x);
+        let cell = vec2(width, TILE.y);
+        let size = vec2(fixed + last * (cell.x + GAP), 24.0 + lanes.len() as f32 * (cell.y + 40.0));
+        let mut clicked = None;
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            let (area, _) = ui.allocate_exact_size(size, Sense::hover());
+            clicked = self.paint_lanes(ui, area.left_top() + vec2(16.0, 24.0), cell, preset, &lanes, rejoins);
+        });
+        if let Some(key) = clicked {
+            self.selected_block = Some(key);
+        }
+    }
+
+    fn paint_lanes(&self, ui: &Ui, origin: egui::Pos2, cell: egui::Vec2, preset: &Preset, lanes: &[crate::layout::Lane], rejoins: bool) -> Option<String> {
+        let painter = ui.painter();
         let wire = Stroke::new(1.5, theme::TEXT_DIM);
         let mut clicked = None;
+        let tail = if lanes.len() > 1 { BRANCH_INSET } else { 0.0 };
+        let last = lanes.iter().flat_map(|l| &l.tiles).map(|t| t.position).max().map_or(0.0, |p| f32::from(p) + 1.0);
         for (row, lane) in lanes.iter().enumerate() {
-            let y = origin.y + row as f32 * (TILE.y + 40.0);
+            let y = origin.y + row as f32 * (cell.y + 40.0);
+            let inset = if row == 1 { BRANCH_INSET } else { 0.0 };
             let first = lane.tiles.first().map_or(0.0, |t| f32::from(t.position));
-            let last = lanes.iter().flat_map(|l| &l.tiles).map(|t| t.position).max().map_or(0.0, |p| f32::from(p) + 1.0);
-            let lane_rect = Rect::from_min_size(
-                pos2(origin.x - 8.0 + first * (TILE.x + GAP), y - 8.0),
-                vec2((last - first) * (TILE.x + GAP) + 110.0, TILE.y + 16.0),
+            let lane_rect = Rect::from_min_max(
+                pos2(origin.x - 8.0 + first * (cell.x + GAP) + inset, y - 8.0),
+                pos2(origin.x + last * (cell.x + GAP) + tail + OUTPUT.x + 8.0, y + cell.y + 8.0),
             );
             painter.rect_filled(lane_rect, CornerRadius::same(8), theme::LANE);
             let mut previous_end: Option<f32> = None;
             for tile in &lane.tiles {
-                let x = origin.x + f32::from(tile.position) * (TILE.x + GAP);
-                let rect = Rect::from_min_size(pos2(x, y), TILE);
+                let x = origin.x + f32::from(tile.position) * (cell.x + GAP) + inset;
+                let rect = Rect::from_min_size(pos2(x, y), cell);
                 if let Some(end) = previous_end {
-                    let a = pos2(end + 4.0, y + TILE.y / 2.0);
+                    let a = pos2(end + 4.0, y + cell.y / 2.0);
                     painter.line_segment([a, pos2(x - 4.0, a.y)], wire);
                 }
                 previous_end = Some(rect.right());
@@ -106,37 +129,34 @@ impl EditorApp {
                 if response.clicked() {
                     clicked = Some(tile.block_key.clone());
                 }
-                self.paint_tile(&painter, rect, tile);
+                self.paint_tile(painter, rect, tile);
             }
-            let end = origin.x + last * (TILE.x + GAP);
-            if row == 0
-                && let Some(from) = previous_end
-            {
-                painter.line_segment([pos2(from + 4.0, y + TILE.y / 2.0), pos2(end - 4.0, y + TILE.y / 2.0)], wire);
+            let end = origin.x + last * (cell.x + GAP) + tail;
+            let below_rejoins = row == 1 && rejoins;
+            if !below_rejoins && let Some(from) = previous_end {
+                painter.line_segment([pos2(from + 4.0, y + cell.y / 2.0), pos2(end - 4.0, y + cell.y / 2.0)], wire);
             }
-            let output = if lane.path == 1 && has_send { "Send" } else { "Main L/R" };
-            painter.text(pos2(end, y + TILE.y / 2.0), Align2::LEFT_CENTER, format!("→ {output}"), theme::semibold(12.0), theme::TEXT_DIM);
+            if !below_rejoins {
+                output_label(painter, pos2(end, y + (cell.y - OUTPUT.y) / 2.0), lane.output);
+            }
         }
         if let (Some(branch), Some(below)) = (branch(preset), lanes.get(1)) {
-            let column = |slot: u8| origin.x + f32::from(slot) * (TILE.x + GAP) - GAP / 2.0;
-            let (top, bottom) = (origin.y + TILE.y / 2.0, origin.y + TILE.y + 40.0 + TILE.y / 2.0);
+            let column = |slot: u8| origin.x + f32::from(slot) * (cell.x + GAP) - GAP / 2.0;
+            let (top, bottom) = (origin.y + cell.y / 2.0, origin.y + cell.y + 40.0 + cell.y / 2.0);
             let split = column(branch.split);
             if let Some(first) = below.tiles.first() {
-                let x = origin.x + f32::from(first.position) * (TILE.x + GAP);
-                curve(&painter, pos2(split, top), pos2(x - 4.0, bottom), wire);
+                let x = origin.x + f32::from(first.position) * (cell.x + GAP) + BRANCH_INSET;
+                curve(painter, pos2(split, top), pos2(x - 4.0, bottom), wire);
             }
             painter.circle_filled(pos2(split, top), 4.0, theme::TEXT_MID);
-            // A path that ends in a send leaves through its own output and is drawn without a join.
-            if !has_send && let Some(last) = below.tiles.last() {
-                let join = column(branch.join);
-                let x = origin.x + f32::from(last.position) * (TILE.x + GAP) + TILE.x;
-                curve(&painter, pos2(join, top), pos2(x + 4.0, bottom), wire);
+            if rejoins && let Some(last) = below.tiles.last() {
+                let join = column(branch.join) + BRANCH_INSET;
+                let x = origin.x + f32::from(last.position) * (cell.x + GAP) + cell.x + BRANCH_INSET;
+                curve(painter, pos2(join, top), pos2(x + 4.0, bottom), wire);
                 painter.circle_filled(pos2(join, top), 4.0, theme::TEXT_MID);
             }
         }
-        if let Some(key) = clicked {
-            self.selected_block = Some(key);
-        }
+        clicked
     }
 
     fn paint_tile(&self, painter: &egui::Painter, rect: Rect, tile: &Tile) {
@@ -216,12 +236,16 @@ impl eframe::App for EditorApp {
     }
 }
 
-/// A wire from a junction on path A down into path B, leaving vertically and arriving level. The
-/// second control point sits behind the end so the bend stays round when the two are only a gap
-/// apart horizontally.
+/// A wire from a junction on path A down into path B, leaving vertically and arriving level.
 fn curve(painter: &egui::Painter, junction: egui::Pos2, end: egui::Pos2, stroke: Stroke) {
-    let drop = end.y - junction.y;
-    let back = if end.x >= junction.x { -1.0 } else { 1.0 } * drop * 0.35;
-    let points = [junction, junction + vec2(0.0, drop * 0.6), pos2(end.x + back, end.y), end];
+    let points = [junction, pos2(junction.x, (junction.y + end.y) / 2.0), pos2(junction.x, end.y), end];
     painter.add(egui::epaint::CubicBezierShape::from_points_stroke(points, false, egui::Color32::TRANSPARENT, stroke));
+}
+
+/// The jack a lane ends in, drawn as a pill where its wire stops.
+fn output_label(painter: &egui::Painter, at: egui::Pos2, output: &str) {
+    let rect = Rect::from_min_size(at, OUTPUT);
+    painter.rect_filled(rect, CornerRadius::same(14), theme::RAISED_HI);
+    painter.rect_stroke(rect, CornerRadius::same(14), Stroke::new(1.0, theme::TEXT_DIM), StrokeKind::Inside);
+    painter.text(rect.center(), Align2::CENTER_CENTER, output, theme::semibold(12.0), theme::TEXT);
 }
