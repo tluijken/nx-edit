@@ -87,8 +87,11 @@ headless with `egui_kittest`.
 The `windows` dev shell builds for `x86_64-pc-windows-gnu` and runs the tests under Wine:
 
 ```sh
-WINEPREFIX=$PWD/target/wine nix develop .#windows -c cargo test --workspace
+WINEPREFIX=$PWD/target/wine WINEDLLOVERRIDES="mscoree=;mshtml=" nix develop .#windows -c cargo test --workspace
 ```
+
+The overrides skip Wine's Mono and Gecko prompts, which otherwise stall the first run of a new
+prefix.
 
 | crate | role |
 |---|---|
