@@ -34,3 +34,12 @@ MIDI (`0x02`, `0x82`) and HID traffic can be filtered out with `--ep`.
 - Never capture while signing in to a Line 6 account in the same file as device traffic; account
   traffic is captured separately (HTTPS proxy in the VM) and tokens are scrubbed before committing.
 - The repo is private; captures contain Line 6 data and stay out of public repos.
+
+## Session 2 (planned)
+
+`scripts/capture-session.sh` leads through the next session: preset editing, chain editing,
+switch and list parameters, renaming, saving, export, import to a place (the CustomTone "assign"
+flow), copy and clear, a global setting, backup, and a footswitch mode check. Each step prints
+the action, captures it, keeps the pedal's traffic in `captures/<label>.pcapng` and logs what was
+seen in `local/capture-session-2.log`. All edits happen on 03A–03C, never on the presets in use.
+Before step 19, copy `Revv_Home.hlx` into the VM.
