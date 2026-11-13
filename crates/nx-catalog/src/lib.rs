@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub use categories::{Category, CategoryGroup};
-pub use import::{default_res_dir, import_installer};
+pub use import::{default_res_dir, import_hxedit, import_installer};
 pub use models::{ModelDef, ParamDef};
 pub use symbols::{ModelSymbol, ModelSymbols, shared_id};
 
@@ -23,6 +23,8 @@ pub enum CatalogError {
     Json { path: PathBuf, source: serde_json::Error },
     #[error("extracting the HX Edit installer failed: {0}")]
     Extract(String),
+    #[error("{path} is not HX Edit's res folder: {missing} is missing")]
+    NotHxEditRes { path: PathBuf, missing: &'static str },
 }
 
 #[derive(Debug, Clone, Default)]
