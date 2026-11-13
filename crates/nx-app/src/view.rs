@@ -45,6 +45,7 @@ struct Drag {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Panel {
     Presets,
+    Library,
     Snapshots,
     Models,
 }
@@ -59,12 +60,21 @@ pub struct EditorApp {
     drag: Option<Drag>,
     panel: Panel,
     search: String,
+    library: crate::library::Scan,
+    /// The library file shown instead of the pedal's preset; its knobs never reach the pedal.
+    showing_file: Option<std::path::PathBuf>,
+    /// The pedal's preset, kept while a library file is shown.
+    pedal_preset: Option<Preset>,
 }
 
 impl EditorApp {
     pub fn new(preset: Option<Preset>, catalog: Option<Catalog>, status: String, connection: Option<Connection>) -> Self {
         let selected_block = preset.as_ref().and_then(|p| p.blocks().first().map(|b| b.key.clone()));
-        let panel = if connection.is_some() { Panel::Presets } else { Panel::Snapshots };
+        let panel = match (&connection, &preset) {
+            (Some(_), _) => Panel::Presets,
+            (None, None) => Panel::Library,
+            (None, Some(_)) => Panel::Snapshots,
+        };
         Self {
             preset,
             catalog,
@@ -75,6 +85,9 @@ impl EditorApp {
             drag: None,
             panel,
             search: String::new(),
+            library: crate::library::scan(&crate::library::default_dir()),
+            showing_file: None,
+            pedal_preset: None,
         }
     }
 
@@ -227,7 +240,7 @@ impl EditorApp {
         let tile = lanes.iter().flat_map(|l| &l.tiles).find(|t| t.block_key == key).cloned();
         let model = self.catalog.as_ref().and_then(|c| c.model(&block.model)).cloned();
         let color = tile.as_ref().and_then(|t| t.category_color).map_or(theme::TEXT_MID, theme::from_rgb_u32);
-        let address = self.connection.as_ref().and_then(|c| c.addresses.get(&key)).cloned();
+        let address = self.connection.as_ref().filter(|_| self.showing_file.is_none()).and_then(|c| c.addresses.get(&key)).cloned();
         let mut turned = None;
         card(ui, |ui| {
             ui.horizontal(|ui| {
@@ -305,7 +318,7 @@ impl EditorApp {
 
     fn side_card(&mut self, ui: &mut Ui) {
         card(ui, |ui| {
-            let mut tabs = vec![(Panel::Snapshots, "Snapshots"), (Panel::Models, "Models")];
+            let mut tabs = vec![(Panel::Library, "Library"), (Panel::Snapshots, "Snapshots"), (Panel::Models, "Models")];
             if self.connection.is_some() {
                 tabs.insert(0, (Panel::Presets, "Presets"));
             }
@@ -315,6 +328,7 @@ impl EditorApp {
                 Panel::Presets => self.presets(ui),
                 Panel::Snapshots => self.snapshots(ui),
                 Panel::Models => self.models(ui),
+                Panel::Library => self.library(ui),
             }
         });
     }
@@ -337,15 +351,87 @@ impl EditorApp {
                 painter.text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, nx_proto::slot_label(entry.index), mono(13.0), label_color);
                 let font = if current { theme::semibold(14.0) } else { theme::regular(14.0) };
                 painter.text(rect.left_center() + vec2(60.0, 0.0), Align2::LEFT_CENTER, &entry.name, font, if current { theme::TEXT } else { theme::TEXT_MID });
-                if response.clicked() && !current {
-                    pick = Some(entry.index);
+                if response.clicked() {
+                    pick = Some((entry.index, current));
                 }
             }
         });
-        if let (Some(index), Some(connection)) = (pick, &self.connection) {
-            connection.live.select(0, index);
-            self.status = format!("Switching to {}…", nx_proto::slot_label(index));
+        match (pick, &self.connection) {
+            (Some((_, true)), _) => self.show_pedal(),
+            (Some((index, false)), Some(connection)) => {
+                connection.live.select(0, index);
+                self.status = format!("Switching to {}…", nx_proto::slot_label(index));
+            }
+            _ => {}
         }
+    }
+
+    fn library(&mut self, ui: &mut Ui) {
+        if ui.button("Rescan").clicked() {
+            self.library = crate::library::scan(&crate::library::default_dir());
+        }
+        if self.library.entries.is_empty() {
+            ui.label(RichText::new(format!("No presets in {}", crate::library::default_dir().display())).color(theme::TEXT_DIM));
+        }
+        let mut open = None;
+        egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+            let mut folder = None;
+            for entry in &self.library.entries {
+                if folder != Some(&entry.folder) {
+                    folder = Some(&entry.folder);
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(&entry.folder).font(theme::semibold(12.0)).color(theme::TEXT_DIM));
+                }
+                let shown = self.showing_file.as_ref() == Some(&entry.path);
+                let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+                if shown {
+                    ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED_HI);
+                } else if response.hovered() {
+                    ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED);
+                }
+                let font = if shown { theme::semibold(14.0) } else { theme::regular(14.0) };
+                ui.painter().text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, &entry.name, font, if shown { theme::TEXT } else { theme::TEXT_MID });
+                if response.clicked() {
+                    open = Some(entry.path.clone());
+                }
+            }
+        });
+        if !self.library.skipped.is_empty() {
+            ui.label(RichText::new(format!("{} files could not be read", self.library.skipped.len())).font(theme::regular(12.0)).color(theme::TEXT_DIM));
+        }
+        if let Some(path) = open {
+            self.open_file(path);
+        }
+    }
+
+    fn open_file(&mut self, path: std::path::PathBuf) {
+        match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| Preset::from_slice(&b).map_err(|e| e.to_string())) {
+            Ok(preset) => {
+                if self.showing_file.is_none() && self.connection.is_some() {
+                    self.pedal_preset = self.preset.take();
+                }
+                self.selected_block = preset.blocks().first().map(|b| b.key.clone());
+                self.status = if self.connection.is_some() {
+                    format!("Library: {} · not on the pedal", preset.name())
+                } else {
+                    format!("Library: {}", preset.name())
+                };
+                self.preset = Some(preset);
+                self.showing_file = Some(path);
+                self.drag = None;
+            }
+            Err(e) => self.status = format!("{}: {e}", path.display()),
+        }
+    }
+
+    /// Back from a library file to the pedal's preset.
+    fn show_pedal(&mut self) {
+        let Some(preset) = self.pedal_preset.take() else { return };
+        self.selected_block = preset.blocks().first().map(|b| b.key.clone());
+        self.preset = Some(preset);
+        self.showing_file = None;
+        self.drag = None;
+        self.status = "Connected · changes not saved".to_owned();
     }
 
     /// Shows a preset the pedal switched to, by a click here or a footswitch.
@@ -362,6 +448,8 @@ impl EditorApp {
                 }
                 self.selected_block = hlx.blocks().first().map(|b| b.key.clone());
                 self.preset = Some(hlx);
+                self.showing_file = None;
+                self.pedal_preset = None;
                 self.drag = None;
                 self.status = "Connected · changes not saved".to_owned();
             }
@@ -653,22 +741,18 @@ impl eframe::App for EditorApp {
         }
         egui::Panel::top("top").frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| self.top_bar(ui));
         egui::CentralPanel::default().frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| {
-            let Some(preset) = &self.preset else {
-                ui.centered_and_justified(|ui| ui.label("Open a preset: nx-edit <preset.hlx> or nx-edit --from-device"));
-                return;
-            };
-            let lanes = lanes(preset, self.catalog.as_ref());
+            let lanes = self.preset.as_ref().map(|p| lanes(p, self.catalog.as_ref())).unwrap_or_default();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = GAP;
                 self.chain_card(ui, &lanes);
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = GAP;
                     let editor_w = (ui.available_width() - SIDE_W - GAP).max(320.0);
-                    ui.allocate_ui_with_layout(vec2(editor_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.allocate_ui_with_layout(vec2(editor_w, ui.available_height()), egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_width(editor_w);
                         self.editor_card(ui, &lanes);
                     });
-                    ui.allocate_ui_with_layout(vec2(SIDE_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.allocate_ui_with_layout(vec2(SIDE_W, ui.available_height()), egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_width(SIDE_W);
                         self.side_card(ui);
                     });

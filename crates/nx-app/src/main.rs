@@ -1,6 +1,7 @@
 mod cli;
 mod device;
 mod layout;
+mod library;
 mod live;
 mod theme;
 mod view;
