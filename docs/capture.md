@@ -43,3 +43,17 @@ flow), copy and clear, a global setting, backup, and a footswitch mode check. Ea
 the action, captures it, keeps the pedal's traffic in `captures/<label>.pcapng` and logs what was
 seen in `local/capture-session-2.log`. All edits happen on 03A–03C, never on the presets in use.
 Before step 19, copy `Revv_Home.hlx` into the VM.
+
+What nx-edit waits on from this session:
+
+- **Step 17, save**: how HX Edit writes the edited preset back; nx-edit's live edits are not saved
+  on the pedal until this is known.
+- **Step 18, export**: copy the exported `.hlx` out of the VM next to the capture. nx-edit's
+  conversion of the pedal's preset already has the chain, parameters, block states, snapshots
+  (names, block states, controlled values, LED colour, tempo) and controller assignments. Still
+  missing, to compare against the export: per block `@type`, `@stereo`, `@trails`,
+  `@bypassvolume` and `@no_snapshot_bypass`; `inputA/B` and `outputA/B`; the rest of
+  `tone.global`; `variax`, `footswitch` and `dsp1`; `meta` beyond the name; and the snapshots'
+  `@pedalstate`.
+- **Step 19, import to 03B**: what HX Edit sends for a preset file. The "Assign to a place"
+  dialog (branch `feat/assign`) has its Replace button disabled until this is in.
