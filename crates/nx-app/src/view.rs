@@ -121,18 +121,16 @@ impl EditorApp {
             let column = |slot: u8| origin.x + f32::from(slot) * (TILE.x + GAP) - GAP / 2.0;
             let (top, bottom) = (origin.y + TILE.y / 2.0, origin.y + TILE.y + 40.0 + TILE.y / 2.0);
             let split = column(branch.split);
-            painter.line_segment([pos2(split, top), pos2(split, bottom)], wire);
             if let Some(first) = below.tiles.first() {
                 let x = origin.x + f32::from(first.position) * (TILE.x + GAP);
-                painter.line_segment([pos2(split, bottom), pos2(x - 4.0, bottom)], wire);
+                curve(&painter, pos2(split, top), pos2(x - 4.0, bottom), wire);
             }
             painter.circle_filled(pos2(split, top), 4.0, theme::TEXT_MID);
             // A path that ends in a send leaves through its own output and is drawn without a join.
             if !has_send && let Some(last) = below.tiles.last() {
                 let join = column(branch.join);
                 let x = origin.x + f32::from(last.position) * (TILE.x + GAP) + TILE.x;
-                painter.line_segment([pos2(x + 4.0, bottom), pos2(join, bottom)], wire);
-                painter.line_segment([pos2(join, bottom), pos2(join, top)], wire);
+                curve(&painter, pos2(join, top), pos2(x + 4.0, bottom), wire);
                 painter.circle_filled(pos2(join, top), 4.0, theme::TEXT_MID);
             }
         }
@@ -216,4 +214,14 @@ impl eframe::App for EditorApp {
             self.signal_path(ui);
         });
     }
+}
+
+/// A wire from a junction on path A down into path B, leaving vertically and arriving level. The
+/// second control point sits behind the end so the bend stays round when the two are only a gap
+/// apart horizontally.
+fn curve(painter: &egui::Painter, junction: egui::Pos2, end: egui::Pos2, stroke: Stroke) {
+    let drop = end.y - junction.y;
+    let back = if end.x >= junction.x { -1.0 } else { 1.0 } * drop * 0.35;
+    let points = [junction, junction + vec2(0.0, drop * 0.6), pos2(end.x + back, end.y), end];
+    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(points, false, egui::Color32::TRANSPARENT, stroke));
 }
