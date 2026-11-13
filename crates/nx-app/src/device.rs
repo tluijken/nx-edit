@@ -159,9 +159,12 @@ impl DevicePreset {
             syms.get(model).map(|s| s.symbol.clone()).ok_or_else(|| format!("model {model} is not in Helix.sym"))
         };
         let mut dsp0 = Map::new();
+        // Per slot: the block's key and its parameter names, for snapshots and controllers.
+        let mut slots: HashMap<i64, (String, &[String])> = HashMap::new();
         for (i, placed) in preset.blocks().filter(|p| p.dsp == 0).enumerate() {
             let block = placed.block;
             let sym = syms.get(block.model);
+            slots.insert(placed.slot as i64, (format!("block{i}"), sym.map(|s| s.parameters.as_slice()).unwrap_or_default()));
             let mut obj = Map::new();
             obj.insert("@model".into(), json!(nx_catalog::shared_id(&symbol(block.model)?)));
             obj.insert("@path".into(), json!(placed.path));
@@ -187,11 +190,47 @@ impl DevicePreset {
                 );
             }
         }
+        // A controller assignment by its id: the block key and the parameter name it moves.
+        let assigned = |id: i64| -> Option<(&str, &str)> {
+            let assignment = preset.controllers.iter().find(|a| a.id == id)?;
+            let (key, names) = slots.get(&assignment.slot)?;
+            Some((key.as_str(), names.get(usize::try_from(assignment.param).ok()?)?.as_str()))
+        };
+        let mut controller = Map::new();
+        for assignment in &preset.controllers {
+            let Some((key, name)) = assigned(assignment.id) else { continue };
+            let block = controller.entry(key).or_insert_with(|| json!({}));
+            block[name] = json!({"@controller": assignment.controller, "@min": param_json(&assignment.min), "@max": param_json(&assignment.max)});
+        }
         let mut tone = Map::new();
         tone.insert("dsp0".into(), dsp0.into());
         tone.insert("global".into(), json!({"@current_snapshot": preset.snapshots.current}));
+        tone.insert("controller".into(), json!({"dsp0": controller}));
         for (i, snap) in preset.snapshots.list.iter().enumerate() {
-            tone.insert(format!("snapshot{i}"), json!({"@name": snap.name, "@valid": snap.valid}));
+            let mut blocks = Map::new();
+            for (slot, state) in snap.slots.iter().enumerate() {
+                if let Some((key, _)) = slots.get(&(slot as i64)) {
+                    blocks.insert(key.clone(), json!(state.enabled));
+                }
+            }
+            let mut values = Map::new();
+            for value in &snap.controllers {
+                let Some((key, name)) = assigned(value.assignment) else { continue };
+                let block = values.entry(key).or_insert_with(|| json!({}));
+                block[name] = json!({"@fs_enabled": value.flag, "@value": param_json(&value.value)});
+            }
+            tone.insert(
+                format!("snapshot{i}"),
+                json!({
+                    "@name": snap.name,
+                    "@valid": snap.valid,
+                    "@custom_name": snap.custom_name,
+                    "@ledcolor": snap.led_color,
+                    "@tempo": f64::from(snap.tempo),
+                    "blocks": {"dsp0": blocks},
+                    "controllers": {"dsp0": values},
+                }),
+            );
         }
         let hlx = json!({
             "data": {
@@ -285,6 +324,55 @@ mod tests {
         let Some(syms) = helix_sym() else { return };
         let lead = preset_from_capture(&capture("05-snapshot-switch")).unwrap().to_hlx(&syms).unwrap();
         assert_eq!(lead.current_snapshot(), 2);
+    }
+
+    fn tone(preset: &nx_hlx::Preset) -> serde_json::Value {
+        serde_json::from_slice::<serde_json::Value>(&preset.to_vec_pretty()).unwrap()["data"]["tone"].clone()
+    }
+
+    #[test]
+    fn converted_capture_keeps_each_snapshots_block_states() {
+        let Some(syms) = helix_sym() else { return };
+        let converted = tone(&preset_from_capture(&capture("02-select-preset-01C")).unwrap().to_hlx(&syms).unwrap());
+        let want = tone(&fixture());
+        for i in 0..3 {
+            let snapshot = format!("snapshot{i}");
+            assert_eq!(converted[&snapshot]["blocks"], want[&snapshot]["blocks"], "{snapshot}");
+        }
+    }
+
+    #[test]
+    fn converted_capture_keeps_the_snapshot_controller_and_its_values() {
+        let Some(syms) = helix_sym() else { return };
+        let converted = tone(&preset_from_capture(&capture("02-select-preset-01C")).unwrap().to_hlx(&syms).unwrap());
+        let want = tone(&fixture());
+        assert_eq!(converted["controller"], want["controller"]);
+        for i in 0..3 {
+            let snapshot = format!("snapshot{i}");
+            assert_eq!(converted[&snapshot]["controllers"], want[&snapshot]["controllers"], "{snapshot}");
+        }
+    }
+
+    #[test]
+    fn converted_capture_keeps_snapshot_settings() {
+        let Some(syms) = helix_sym() else { return };
+        let converted = tone(&preset_from_capture(&capture("02-select-preset-01C")).unwrap().to_hlx(&syms).unwrap());
+        let want = tone(&fixture());
+        for i in 0..3 {
+            for key in ["@name", "@valid", "@custom_name", "@ledcolor", "@tempo"] {
+                assert_eq!(converted[format!("snapshot{i}")][key], want[format!("snapshot{i}")][key], "snapshot{i} {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn converted_snapshots_switch_like_the_hlx() {
+        let Some(syms) = helix_sym() else { return };
+        let mut converted = preset_from_capture(&capture("02-select-preset-01C")).unwrap().to_hlx(&syms).unwrap();
+        let mut want = fixture();
+        converted.select_snapshot(2);
+        want.select_snapshot(2);
+        assert_eq!(lanes(&converted, None), lanes(&want, None));
     }
 
     fn message(from_host: bool, body: &Value) -> Frame {
