@@ -83,10 +83,18 @@ impl Preset {
     }
 
     pub fn split(&self) -> Option<SplitInfo> {
-        let split = self.dsp0()?.get("split")?.as_object()?;
+        self.junction("split")
+    }
+
+    pub fn join(&self) -> Option<SplitInfo> {
+        self.junction("join")
+    }
+
+    fn junction(&self, key: &str) -> Option<SplitInfo> {
+        let junction = self.dsp0()?.get(key)?.as_object()?;
         Some(SplitInfo {
-            model: split.get("@model")?.as_str()?.to_owned(),
-            position: small(split.get("@position")),
+            model: junction.get("@model")?.as_str()?.to_owned(),
+            position: small(junction.get("@position")),
         })
     }
 

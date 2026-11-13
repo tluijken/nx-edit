@@ -1,10 +1,10 @@
-//! Layout B: HX Edit's arrangement in Scythe's colours. Read-only until the device crates exist.
+//! Layout B: HX Edit's arrangement in Scythe's colours. Read-only for now.
 
 use egui::{Align2, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use nx_catalog::Catalog;
 use nx_hlx::Preset;
 
-use crate::layout::{Tile, display_value, lanes};
+use crate::layout::{Tile, branch, display_value, lanes};
 use crate::theme;
 
 const TILE: egui::Vec2 = vec2(96.0, 56.0);
@@ -82,6 +82,7 @@ impl EditorApp {
         let has_send = preset.blocks().iter().any(|b| b.model.starts_with("HD2_Send"));
         let origin = ui.max_rect().left_top() + vec2(16.0, 24.0);
         let painter = ui.painter().clone();
+        let wire = Stroke::new(1.5, theme::TEXT_DIM);
         let mut clicked = None;
         for (row, lane) in lanes.iter().enumerate() {
             let y = origin.y + row as f32 * (TILE.y + 40.0);
@@ -98,7 +99,7 @@ impl EditorApp {
                 let rect = Rect::from_min_size(pos2(x, y), TILE);
                 if let Some(end) = previous_end {
                     let a = pos2(end + 4.0, y + TILE.y / 2.0);
-                    painter.line_segment([a, pos2(x - 4.0, a.y)], Stroke::new(1.5, theme::TEXT_DIM));
+                    painter.line_segment([a, pos2(x - 4.0, a.y)], wire);
                 }
                 previous_end = Some(rect.right());
                 let response = ui.interact(rect, ui.scope_id().with(&tile.block_key), Sense::click());
@@ -108,8 +109,32 @@ impl EditorApp {
                 self.paint_tile(&painter, rect, tile);
             }
             let end = origin.x + last * (TILE.x + GAP);
+            if row == 0
+                && let Some(from) = previous_end
+            {
+                painter.line_segment([pos2(from + 4.0, y + TILE.y / 2.0), pos2(end - 4.0, y + TILE.y / 2.0)], wire);
+            }
             let output = if lane.path == 1 && has_send { "Send" } else { "Main L/R" };
             painter.text(pos2(end, y + TILE.y / 2.0), Align2::LEFT_CENTER, format!("→ {output}"), theme::semibold(12.0), theme::TEXT_DIM);
+        }
+        if let (Some(branch), Some(below)) = (branch(preset), lanes.get(1)) {
+            let column = |slot: u8| origin.x + f32::from(slot) * (TILE.x + GAP) - GAP / 2.0;
+            let (top, bottom) = (origin.y + TILE.y / 2.0, origin.y + TILE.y + 40.0 + TILE.y / 2.0);
+            let split = column(branch.split);
+            painter.line_segment([pos2(split, top), pos2(split, bottom)], wire);
+            if let Some(first) = below.tiles.first() {
+                let x = origin.x + f32::from(first.position) * (TILE.x + GAP);
+                painter.line_segment([pos2(split, bottom), pos2(x - 4.0, bottom)], wire);
+            }
+            painter.circle_filled(pos2(split, top), 4.0, theme::TEXT_MID);
+            // A path that ends in a send leaves through its own output and is drawn without a join.
+            if !has_send && let Some(last) = below.tiles.last() {
+                let join = column(branch.join);
+                let x = origin.x + f32::from(last.position) * (TILE.x + GAP) + TILE.x;
+                painter.line_segment([pos2(x + 4.0, bottom), pos2(join, bottom)], wire);
+                painter.line_segment([pos2(join, bottom), pos2(join, top)], wire);
+                painter.circle_filled(pos2(join, top), 4.0, theme::TEXT_MID);
+            }
         }
         if let Some(key) = clicked {
             self.selected_block = Some(key);

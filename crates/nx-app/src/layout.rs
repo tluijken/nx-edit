@@ -45,6 +45,25 @@ pub fn lanes(preset: &Preset, catalog: Option<&Catalog>) -> Vec<Lane> {
     lanes
 }
 
+/// Where path 1 leaves path 0 and comes back, in slot positions: the branch starts before slot
+/// `split` and rejoins before slot `join`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Branch {
+    pub split: u8,
+    pub join: u8,
+}
+
+pub fn branch(preset: &Preset) -> Option<Branch> {
+    let blocks = preset.blocks();
+    let below = blocks.iter().filter(|b| b.path == 1);
+    let first = below.clone().map(|b| b.position).min()?;
+    let after_last = blocks.iter().map(|b| b.position + 1).max().unwrap_or(first + 1);
+    Some(Branch {
+        split: preset.split().map_or(first, |s| s.position),
+        join: preset.join().map_or(after_last, |j| j.position),
+    })
+}
+
 /// A parameter value as HX Edit shows it: 0–1 knobs on a 0–10 scale, switches as On/Off.
 pub fn display_value(value: &serde_json::Value, def: Option<&nx_catalog::ParamDef>) -> String {
     match value {
@@ -133,6 +152,24 @@ mod tests {
         let bottom: Vec<u8> = lanes[1].tiles.iter().map(|t| t.position).collect();
         assert_eq!(top, vec![0, 4]);
         assert_eq!(bottom, vec![6, 7]);
+    }
+
+    #[test]
+    fn revv_dm_branches_at_its_split_and_rejoins_at_its_join() {
+        assert_eq!(branch(&preset("Revv_DM.hlx")), Some(Branch { split: 6, join: 8 }));
+    }
+
+    #[test]
+    fn a_split_without_blocks_below_draws_no_branch() {
+        assert_eq!(branch(&preset("Revv_Home.hlx")), None);
+    }
+
+    #[test]
+    fn a_branch_without_join_rejoins_after_the_last_block() {
+        let mut v: serde_json::Value = serde_json::from_slice(&preset("Revv_DM.hlx").to_vec_pretty()).unwrap();
+        v["data"]["tone"]["dsp0"].as_object_mut().unwrap().remove("join");
+        let preset = Preset::from_slice(&serde_json::to_vec(&v).unwrap()).unwrap();
+        assert_eq!(branch(&preset), Some(Branch { split: 6, join: 8 }));
     }
 
     #[test]

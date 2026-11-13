@@ -57,6 +57,7 @@ fn revv_dm_blocks() {
     assert_eq!(cab.path, 1);
     assert_eq!(send.path, 1);
     assert_eq!(preset.split().unwrap().position, 6);
+    assert_eq!(preset.join().unwrap().position, 8);
     let amp = &blocks[2];
     assert!(amp.enabled);
     assert!(amp.params.iter().any(|(k, _)| k == "Drive"));
