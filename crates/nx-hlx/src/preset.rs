@@ -126,6 +126,12 @@ impl Preset {
         }
     }
 
+    pub fn set_name(&mut self, name: &str) {
+        if let Some(meta) = self.raw.pointer_mut("/data/meta").and_then(Value::as_object_mut) {
+            meta.insert("name".into(), Value::from(name));
+        }
+    }
+
     /// Switches a block on or off; false if there is no such block.
     pub fn set_enabled(&mut self, block_key: &str, enabled: bool) -> bool {
         let block = self.raw.pointer_mut("/data/tone/dsp0").and_then(|d| d.get_mut(block_key)).and_then(Value::as_object_mut);

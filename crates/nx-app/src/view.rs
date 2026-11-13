@@ -72,6 +72,8 @@ pub struct EditorApp {
     library: crate::library::Scan,
     /// The library file shown instead of the pedal's preset; its knobs never reach the pedal.
     showing_file: Option<std::path::PathBuf>,
+    /// A library preset being renamed, and the name typed so far.
+    renaming: Option<(std::path::PathBuf, String)>,
     /// The pedal's preset, kept while a library file is shown.
     pedal_preset: Option<Preset>,
     screen: Screen,
@@ -98,6 +100,7 @@ impl EditorApp {
             search: String::new(),
             library: crate::library::scan(&crate::library::default_dir()),
             showing_file: None,
+            renaming: None,
             pedal_preset: None,
             screen: Screen::Editor,
             customtone: Default::default(),
@@ -428,13 +431,20 @@ impl EditorApp {
     }
 
     fn library(&mut self, ui: &mut Ui) {
-        if ui.button("Rescan").clicked() {
-            self.library = crate::library::scan(&crate::library::default_dir());
-        }
+        let dir = crate::library::default_dir();
+        ui.horizontal(|ui| {
+            if ui.button("Rescan").clicked() {
+                self.rescan();
+            }
+            if ui.button("Open folder").clicked() {
+                open_in_file_manager(&dir);
+            }
+        });
+        ui.label(RichText::new("Drop .hlx files on the window to add them. Right-click a preset to rename or delete it.").font(theme::regular(12.0)).color(theme::TEXT_DIM));
         if self.library.entries.is_empty() {
-            ui.label(RichText::new(format!("No presets in {}", crate::library::default_dir().display())).color(theme::TEXT_DIM));
+            ui.label(RichText::new(format!("No presets in {}", dir.display())).color(theme::TEXT_DIM));
         }
-        let mut open = None;
+        let mut action = None;
         egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
             let mut folder = None;
             for entry in &self.library.entries {
@@ -442,6 +452,20 @@ impl EditorApp {
                     folder = Some(&entry.folder);
                     ui.add_space(4.0);
                     ui.label(RichText::new(&entry.folder).font(theme::semibold(12.0)).color(theme::TEXT_DIM));
+                }
+                if let Some((path, name)) = self.renaming.as_mut().filter(|(p, _)| p == &entry.path) {
+                    ui.horizontal(|ui| {
+                        let edit = ui.add(egui::TextEdit::singleline(name).desired_width(ui.available_width() - 110.0));
+                        edit.request_focus();
+                        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if ui.button("Rename").clicked() || enter {
+                            action = Some(LibraryAction::Rename(path.clone(), name.clone()));
+                        }
+                        if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            action = Some(LibraryAction::CancelRename);
+                        }
+                    });
+                    continue;
                 }
                 let shown = self.showing_file.as_ref() == Some(&entry.path);
                 let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
@@ -453,16 +477,77 @@ impl EditorApp {
                 let font = if shown { theme::semibold(14.0) } else { theme::regular(14.0) };
                 ui.painter().text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, &entry.name, font, if shown { theme::TEXT } else { theme::TEXT_MID });
                 if response.clicked() {
-                    open = Some(entry.path.clone());
+                    action = Some(LibraryAction::Open(entry.path.clone()));
                 }
+                response.context_menu(|ui| {
+                    if ui.button("Rename…").clicked() {
+                        action = Some(LibraryAction::StartRename(entry.path.clone(), entry.name.clone()));
+                        ui.close();
+                    }
+                    if ui.button("Move to library trash").clicked() {
+                        action = Some(LibraryAction::Trash(entry.path.clone()));
+                        ui.close();
+                    }
+                    if ui.button("Show in folder").clicked() {
+                        if let Some(parent) = entry.path.parent() {
+                            open_in_file_manager(parent);
+                        }
+                        ui.close();
+                    }
+                });
             }
         });
         if !self.library.skipped.is_empty() {
             ui.label(RichText::new(format!("{} files could not be read", self.library.skipped.len())).font(theme::regular(12.0)).color(theme::TEXT_DIM));
         }
-        if let Some(path) = open {
-            self.open_file(path);
+        match action {
+            Some(LibraryAction::Open(path)) => self.open_file(path),
+            Some(LibraryAction::StartRename(path, name)) => self.renaming = Some((path, name)),
+            Some(LibraryAction::CancelRename) => self.renaming = None,
+            Some(LibraryAction::Rename(path, name)) => {
+                match crate::library::rename(&path, &name) {
+                    Ok(()) => self.status = format!("Renamed to {}", name.trim()),
+                    Err(e) => self.status = e,
+                }
+                self.renaming = None;
+                self.rescan();
+            }
+            Some(LibraryAction::Trash(path)) => {
+                match crate::library::trash(&dir, &path) {
+                    Ok(kept) => self.status = format!("Moved to {}", kept.display()),
+                    Err(e) => self.status = e,
+                }
+                self.rescan();
+            }
+            None => {}
         }
+    }
+
+    fn rescan(&mut self) {
+        self.library = crate::library::scan(&crate::library::default_dir());
+    }
+
+    /// Copies `.hlx` files dropped on the window into the library.
+    fn take_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        if dropped.is_empty() {
+            return;
+        }
+        let dir = crate::library::default_dir();
+        let (mut added, mut failed) = (0, Vec::new());
+        for path in dropped {
+            match crate::library::import(&dir, &path) {
+                Ok(_) => added += 1,
+                Err(e) => failed.push(e),
+            }
+        }
+        self.status = match failed.first() {
+            None => format!("Added {added} preset(s) to the library"),
+            Some(e) => format!("Added {added}, {} not added: {e}", failed.len()),
+        };
+        self.rescan();
+        self.panel = Panel::Library;
+        self.screen = Screen::Editor;
     }
 
     fn open_file(&mut self, path: std::path::PathBuf) {
@@ -671,6 +756,19 @@ impl EditorApp {
             }
         });
     }
+}
+
+/// What a click in the library list asked for.
+enum LibraryAction {
+    Open(std::path::PathBuf),
+    StartRename(std::path::PathBuf, String),
+    Rename(std::path::PathBuf, String),
+    CancelRename,
+    Trash(std::path::PathBuf),
+}
+
+fn open_in_file_manager(dir: &std::path::Path) {
+    _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
 
 /// What a click in the chain asked for.
@@ -901,6 +999,7 @@ fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, c
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.take_updates();
+        self.take_dropped_files(ui.ctx());
         if let Some(connection) = &self.connection {
             if let Some(error) = connection.live.errors().pop() {
                 self.status = format!("HX Stomp: {error}");

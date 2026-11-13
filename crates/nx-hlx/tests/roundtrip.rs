@@ -136,3 +136,10 @@ fn set_current_snapshot_moves_the_active_snapshot() {
     preset.set_current_snapshot(2);
     assert_eq!(preset.current_snapshot(), 2);
 }
+
+#[test]
+fn set_name_renames_the_preset() {
+    let mut preset = Preset::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+    preset.set_name("Revv Live");
+    assert_eq!(Preset::from_slice(&preset.to_vec_pretty()).unwrap().name(), "Revv Live");
+}
