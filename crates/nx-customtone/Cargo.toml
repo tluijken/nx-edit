@@ -7,4 +7,4 @@ license.workspace = true
 [dependencies]
 scraper = "0.29.0"
 thiserror.workspace = true
-ureq = "3.5.2"
+ureq = { version = "3.5.2", features = ["cookies"] }

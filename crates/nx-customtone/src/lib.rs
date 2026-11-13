@@ -1,6 +1,6 @@
-//! Line 6 CustomTone's public listing of HX Stomp presets. CustomTone has no API; this reads the
-//! browse pages a browser gets, one page per call. Downloading needs a signed-in account with a
-//! registered product and is not here yet.
+//! Line 6 CustomTone's listing of HX Stomp presets and signing in to line6.com. CustomTone has no
+//! API; this reads the pages a browser gets, one page per call. Downloading needs a signed-in
+//! account with a registered product and is not here yet.
 
 use scraper::{ElementRef, Html, Selector};
 
@@ -14,6 +14,9 @@ pub enum Error {
     Http(String),
     #[error("CustomTone page not understood: {0}")]
     Page(&'static str),
+    /// The site refused the sign-in; 0 when it gave no error number but stayed signed out.
+    #[error("line6.com refused the sign-in (error {0})")]
+    SignIn(u32),
 }
 
 /// The site's sort options, by the value its form sends.
@@ -108,14 +111,9 @@ pub fn browse_url(query: &Query) -> String {
     format!("{base}/{}/?sort={}&sort_dir={dir}&search_term={}", query.page.max(1), query.sort.param(), encode(&query.search))
 }
 
-/// One page of the listing, fetched now.
+/// One page of the listing, fetched now without signing in.
 pub fn fetch(query: &Query) -> Result<BrowsePage, Error> {
-    let mut response = ureq::get(&browse_url(query))
-        .header("User-Agent", concat!("nx-edit/", env!("CARGO_PKG_VERSION")))
-        .call()
-        .map_err(|e| Error::Http(e.to_string()))?;
-    let html = response.body_mut().read_to_string().map_err(|e| Error::Http(e.to_string()))?;
-    parse_browse(&html)
+    Client::default().browse(query).map(|(page, _)| page)
 }
 
 pub fn parse_browse(html: &str) -> Result<BrowsePage, Error> {
@@ -196,4 +194,91 @@ fn encode(text: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+const LOGIN: &str = "https://line6.com/account/login.html";
+
+/// What a page says about the account it was fetched with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Account {
+    SignedOut,
+    /// `can_download` is false while the account has no registered product: the site then answers
+    /// every download with a "Registration required" dialog.
+    SignedIn { can_download: bool },
+}
+
+/// The fields of the site's own sign-in form.
+pub fn login_form(user: &str, password: &str) -> [(&'static str, String); 5] {
+    [
+        ("action", "login".to_owned()),
+        ("redirect", "/customtone/".to_owned()),
+        ("l_email_user", user.to_owned()),
+        ("l_pass", password.to_owned()),
+        ("submit", "Login".to_owned()),
+    ]
+}
+
+pub fn account_state(html: &str) -> Account {
+    if !html.contains("?action=logout") {
+        return Account::SignedOut;
+    }
+    let registration_required = html.contains("$(\"#ct_reg_req\").dialog('open')");
+    Account::SignedIn { can_download: !registration_required }
+}
+
+/// The site's error number when it refused a sign-in, shown as "( Error: 257)".
+pub fn sign_in_error(html: &str) -> Option<u32> {
+    let after = html.split("( Error:").nth(1)?;
+    after.split(')').next()?.trim().parse().ok()
+}
+
+/// A line6.com session: keeps the site's cookies between requests.
+pub struct Client {
+    agent: ureq::Agent,
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self { agent: ureq::Agent::new_with_defaults() }
+    }
+}
+
+impl Client {
+    fn get(&self, url: &str) -> Result<String, Error> {
+        let mut response = self
+            .agent
+            .get(url)
+            .header("User-Agent", concat!("nx-edit/", env!("CARGO_PKG_VERSION")))
+            .call()
+            .map_err(|e| Error::Http(e.to_string()))?;
+        response.body_mut().read_to_string().map_err(|e| Error::Http(e.to_string()))
+    }
+
+    /// Signs in with the site's form and reports what the account may do.
+    pub fn sign_in(&self, user: &str, password: &str) -> Result<Account, Error> {
+        let mut response = self
+            .agent
+            .post(LOGIN)
+            .header("User-Agent", concat!("nx-edit/", env!("CARGO_PKG_VERSION")))
+            .send_form(login_form(user, password))
+            .map_err(|e| Error::Http(e.to_string()))?;
+        let html = response.body_mut().read_to_string().map_err(|e| Error::Http(e.to_string()))?;
+        if let Some(code) = sign_in_error(&html) {
+            return Err(Error::SignIn(code));
+        }
+        match account_state(&self.get(&browse_url(&Query::default()))?) {
+            Account::SignedOut => Err(Error::SignIn(0)),
+            account => Ok(account),
+        }
+    }
+
+    pub fn sign_out(&self) -> Result<(), Error> {
+        self.get(&format!("{BROWSE}/?action=logout")).map(drop)
+    }
+
+    /// One page of the listing, and what it says about the account.
+    pub fn browse(&self, query: &Query) -> Result<(BrowsePage, Account), Error> {
+        let html = self.get(&browse_url(query))?;
+        Ok((parse_browse(&html)?, account_state(&html)))
+    }
 }
