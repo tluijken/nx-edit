@@ -126,6 +126,24 @@ impl Preset {
         }
     }
 
+    /// Switches a block on or off; false if there is no such block.
+    pub fn set_enabled(&mut self, block_key: &str, enabled: bool) -> bool {
+        let block = self.raw.pointer_mut("/data/tone/dsp0").and_then(|d| d.get_mut(block_key)).and_then(Value::as_object_mut);
+        match block {
+            Some(block) => {
+                block.insert("@enabled".into(), Value::Bool(enabled));
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn set_current_snapshot(&mut self, index: usize) {
+        if let Some(global) = self.raw.pointer_mut("/data/tone/global").and_then(Value::as_object_mut) {
+            global.insert("@current_snapshot".into(), Value::from(index));
+        }
+    }
+
     fn dsp0(&self) -> Option<&Map<String, Value>> {
         self.raw.get("data")?.get("tone")?.get("dsp0")?.as_object()
     }

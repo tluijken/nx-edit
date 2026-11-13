@@ -1,6 +1,7 @@
 //! The editor's open session with the pedal, on a worker thread so the UI never waits on USB. It
-//! sends edits (a burst to one parameter collapses to its latest value) and preset selections, and
-//! reads a preset again whenever the pedal reports it switched, by nx-edit or by a footswitch.
+//! sends edits (a burst to one parameter collapses to its latest value), preset and snapshot
+//! selections and block switches, reads the preset again when the pedal reports a switch or a
+//! block change, by nx-edit or by a footswitch, and passes on parameter changes it reports.
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
@@ -12,9 +13,13 @@ use rmpv::Value;
 
 use crate::device::{DevicePreset, preset_from_session};
 
-/// Notification the pedal sends once it has switched preset, `{106: {107: setlist, 108: index}}`
-/// [seen, 02].
-const PRESET_SWITCHED: u64 = 4;
+/// Notifications after which the pedal's preset differs from what was read, so it is read again:
+/// preset switched (4) [seen, 02], snapshot loaded (46) [seen, 05], a block changed: enabled,
+/// model (49) [seen, 04, live-05].
+const READ_AGAIN: [u64; 3] = [4, 46, 49];
+/// A parameter changed, by nx-edit or on the pedal: `{106: {98, 29, 26, 28, 119}}` like op 30 [seen,
+/// live-05].
+const PARAM_CHANGED: u64 = 30;
 /// How often the worker looks at notifications while no command comes in.
 const POLL: Duration = Duration::from_millis(20);
 
@@ -29,12 +34,15 @@ struct Edit {
 enum Command {
     Edit(Edit),
     Select { setlist: u64, index: u64 },
+    Snapshot(u64),
+    Enabled { slot: u64, enabled: bool },
 }
 
 pub struct Live {
     commands: Option<Sender<Command>>,
     errors: Receiver<String>,
     loaded: Receiver<DevicePreset>,
+    changes: Receiver<ParamChange>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -43,12 +51,13 @@ impl Live {
         let (commands, inbox) = mpsc::channel();
         let (report, errors) = mpsc::channel();
         let (load, loaded) = mpsc::channel();
+        let (change, changes) = mpsc::channel();
         let events = session.events();
         let worker = thread::Builder::new()
             .name("nx-live".into())
-            .spawn(move || work(session, inbox, events, report, load))
+            .spawn(move || work(session, inbox, events, Out { report, load, change }))
             .expect("spawning a thread");
-        Self { commands: Some(commands), errors, loaded, worker: Some(worker) }
+        Self { commands: Some(commands), errors, loaded, changes, worker: Some(worker) }
     }
 
     /// Sets a float parameter, addressed as op 30 addresses it.
@@ -60,6 +69,20 @@ impl Live {
     /// switched. Unsaved edits on the pedal are lost, as with a footswitch.
     pub fn select(&self, setlist: u64, index: u64) {
         self.send(Command::Select { setlist, index });
+    }
+
+    pub fn select_snapshot(&self, index: u64) {
+        self.send(Command::Snapshot(index));
+    }
+
+    /// Turns a block on or off (op 41); `slot` as op 30 addresses it.
+    pub fn set_enabled(&self, slot: u64, enabled: bool) {
+        self.send(Command::Enabled { slot, enabled });
+    }
+
+    /// Parameter changes the pedal reported since the last call, in order.
+    pub fn changes(&self) -> Vec<ParamChange> {
+        self.changes.try_iter().collect()
     }
 
     /// The latest preset read after a switch, if one arrived since the last call.
@@ -93,19 +116,53 @@ impl Drop for Live {
     }
 }
 
-struct Worker {
-    session: Session,
-    /// The block op 78 last selected; a preset switch forgets it.
-    selected: Option<(u64, u64)>,
-    report: Sender<String>,
-    load: Sender<DevicePreset>,
+/// A parameter value the pedal reported, addressed as op 30 addresses it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParamChange {
+    pub slot: u64,
+    pub sub: u64,
+    pub param: u64,
+    pub value: f64,
 }
 
-fn work(session: Session, inbox: Receiver<Command>, events: Receiver<Event>, report: Sender<String>, load: Sender<DevicePreset>) {
-    let mut worker = Worker { session, selected: None, report, load };
+impl ParamChange {
+    fn from_notification(data: &Value) -> Option<Self> {
+        let inner = field(data, 106)?;
+        let u = |k| field(inner, k).and_then(Value::as_u64);
+        Some(Self { slot: u(98)?, sub: u(26)?, param: u(28)?, value: field(inner, 119)?.as_f64()? })
+    }
+}
+
+fn field(map: &Value, key: u64) -> Option<&Value> {
+    map.as_map()?.iter().find(|(k, _)| k.as_u64() == Some(key)).map(|(_, v)| v)
+}
+
+/// Where the worker's results go.
+struct Out {
+    report: Sender<String>,
+    load: Sender<DevicePreset>,
+    change: Sender<ParamChange>,
+}
+
+struct Worker {
+    session: Session,
+    /// The block op 78 last selected; reading the preset again forgets it.
+    selected: Option<(u64, u64)>,
+    out: Out,
+}
+
+fn work(session: Session, inbox: Receiver<Command>, events: Receiver<Event>, out: Out) {
+    let mut worker = Worker { session, selected: None, out };
     loop {
-        let switched = events.try_iter().any(|e| matches!(e, Event::Notification { id: PRESET_SWITCHED, .. }));
-        if switched && worker.reload().is_err() {
+        let mut read_again = false;
+        for event in events.try_iter() {
+            let Event::Notification { id, data } = event else { continue };
+            read_again |= READ_AGAIN.contains(&id);
+            if id == PARAM_CHANGED && let Some(change) = ParamChange::from_notification(&data) {
+                _ = worker.out.change.send(change);
+            }
+        }
+        if read_again && worker.reload().is_err() {
             return;
         }
         let first = match inbox.recv_timeout(POLL) {
@@ -120,7 +177,7 @@ fn work(session: Session, inbox: Receiver<Command>, events: Receiver<Event>, rep
         }
     }
     if let Err(e) = worker.session.close() {
-        _ = worker.report.send(e.to_string());
+        _ = worker.out.report.send(e.to_string());
     }
 }
 
@@ -133,7 +190,7 @@ fn coalesce(first: Command, inbox: &Receiver<Command>) -> Vec<Command> {
                 Command::Edit(e) if (e.slot, e.sub, e.param) == (edit.slot, edit.sub, edit.param) => Some(e),
                 _ => None,
             }),
-            Command::Select { .. } => None,
+            _ => None,
         };
         match (queued, command) {
             (Some(queued), Command::Edit(edit)) => queued.value = edit.value,
@@ -151,9 +208,11 @@ impl Worker {
         let outcome = match command {
             Command::Edit(edit) => self.apply(edit),
             Command::Select { setlist, index } => self.session.request(Request::SelectPreset { setlist, index }).map(drop),
+            Command::Snapshot(index) => self.session.request(Request::SelectSnapshot { index }).map(drop),
+            Command::Enabled { slot, enabled } => self.session.request(Request::SetBlockEnabled { block: slot, enabled }).map(drop),
         };
         outcome.map_err(|e| {
-            _ = self.report.send(format!("{e}; writing stopped"));
+            _ = self.out.report.send(format!("{e}; writing stopped"));
         })
     }
 
@@ -170,11 +229,11 @@ impl Worker {
         self.selected = None;
         match preset_from_session(&self.session) {
             Ok(preset) => {
-                _ = self.load.send(preset);
+                _ = self.out.load.send(preset);
                 Ok(())
             }
             Err(e) => {
-                _ = self.report.send(format!("{e}; stopped"));
+                _ = self.out.report.send(format!("{e}; stopped"));
                 Err(())
             }
         }
@@ -316,6 +375,62 @@ mod tests {
         drop(live);
         let selects = sent(&device).iter().filter(|r| matches!(r, Request::SelectBlock { .. })).count();
         assert_eq!(selects, 2);
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn switching_snapshot_sends_op_88() {
+        let device = pedal(&["Recto DM", "5150 DM", "Revv DM", "Mark Lead"]);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        live.select_snapshot(2);
+        wait_until("op 88 not sent", || sent(&device).contains(&Request::SelectSnapshot { index: 2 }));
+    }
+
+    #[test]
+    fn switching_a_block_sends_op_41() {
+        let device = pedal(&["Recto DM", "5150 DM", "Revv DM", "Mark Lead"]);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        live.set_enabled(5, true);
+        wait_until("op 41 not sent", || sent(&device).contains(&Request::SetBlockEnabled { block: 5, enabled: true }));
+    }
+
+    #[test]
+    fn a_knob_turned_on_the_pedal_is_reported_without_reading_the_preset() {
+        let device = pedal(&["Recto DM", "5150 DM", "Revv DM", "Mark Lead"]);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        let change = Value::Map(vec![
+            (98.into(), 3.into()),
+            (29.into(), true.into()),
+            (26.into(), 0.into()),
+            (28.into(), 1.into()),
+            (119.into(), Value::F32(0.25)),
+        ]);
+        device.notify(30, Value::Map(vec![(82.into(), 0.into()), (106.into(), change)]));
+        let mut changes = Vec::new();
+        wait_until("no change reported", || {
+            changes.extend(live.changes());
+            !changes.is_empty()
+        });
+        assert_eq!(changes, [ParamChange { slot: 3, sub: 0, param: 1, value: 0.25 }]);
+        assert!(sent(&device).is_empty(), "a reported change is not read back");
+    }
+
+    #[test]
+    fn a_snapshot_or_block_change_on_the_pedal_reads_the_preset_again() {
+        let device = pedal(&["Recto DM", "5150 DM", "Revv DM", "Mark Lead"]);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        device.notify(46, Value::Map(vec![(92.into(), 2.into())]));
+        wait_for_load(&live);
+        let block = Value::Map(vec![(98.into(), 5.into()), (59.into(), true.into())]);
+        device.notify(49, Value::Map(vec![(121.into(), 17.into()), (106.into(), block)]));
+        wait_for_load(&live);
     }
 
     #[test]

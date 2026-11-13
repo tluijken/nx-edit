@@ -179,13 +179,15 @@ impl EditorApp {
                 let grid = Grid { origin: area.min, column, columns };
                 clicked = self.paint_chain(ui, &grid, lanes, branch, rejoins);
             });
-            if let Some(key) = clicked {
-                self.selected_block = Some(key);
+            match clicked {
+                Some(ChainClick::Select(key)) => self.selected_block = Some(key),
+                Some(ChainClick::Toggle(key)) => self.toggle_block(&key),
+                None => {}
             }
         });
     }
 
-    fn paint_chain(&self, ui: &Ui, grid: &Grid, lanes: &[Lane], branch: Option<Branch>, rejoins: bool) -> Option<String> {
+    fn paint_chain(&self, ui: &Ui, grid: &Grid, lanes: &[Lane], branch: Option<Branch>, rejoins: bool) -> Option<ChainClick> {
         let painter = ui.painter();
         let wire = Stroke::new(4.0, theme::WIRE);
         let (top, bottom) = (grid.row(0), grid.row(1));
@@ -219,7 +221,14 @@ impl EditorApp {
                 let inset = ((grid.column - 96.0) / 2.0).clamp(4.0, 16.0);
                 let rect = grid.cell(usize::from(tile.position) + 1, row).shrink2(vec2(inset, (ROW_H - BLOCK_H) / 2.0));
                 if ui.interact(rect, ui.scope_id().with(("block", &tile.block_key)), Sense::click()).clicked() {
-                    clicked = Some(tile.block_key.clone());
+                    clicked = Some(ChainClick::Select(tile.block_key.clone()));
+                }
+                if self.live().is_some() {
+                    let power = Rect::from_center_size(power_center(rect), vec2(28.0, 28.0));
+                    let response = ui.interact(power, ui.scope_id().with(("power", &tile.block_key)), Sense::click());
+                    if response.on_hover_text(if tile.enabled { "Bypass" } else { "Turn on" }).clicked() {
+                        clicked = Some(ChainClick::Toggle(tile.block_key.clone()));
+                    }
                 }
                 self.paint_block(painter, rect, tile);
             }
@@ -250,7 +259,7 @@ impl EditorApp {
         }
         let head = rect.left_top() + vec2(12.0, 22.0);
         painter.circle_filled(head + vec2(4.0, 0.0), 4.0, if tile.enabled { color } else { theme::SWITCH_OFF });
-        let power = pos2(rect.right() - 20.0, head.y);
+        let power = power_center(rect);
         if let Some(category) = &tile.category {
             let room = power.x - 16.0 - (head.x + 14.0);
             let galley = one_line(painter, category, theme::semibold(11.0), theme::TEXT_DIM, room);
@@ -272,7 +281,9 @@ impl EditorApp {
         let tile = lanes.iter().flat_map(|l| &l.tiles).find(|t| t.block_key == key).cloned();
         let model = self.catalog.as_ref().and_then(|c| c.model(&block.model)).cloned();
         let color = tile.as_ref().and_then(|t| t.category_color).map_or(theme::TEXT_MID, theme::from_rgb_u32);
-        let address = self.connection.as_ref().filter(|_| self.showing_file.is_none()).and_then(|c| c.addresses.get(&key)).cloned();
+        let address = self.live().and_then(|c| c.addresses.get(&key)).cloned();
+        let can_toggle = address.is_some();
+        let mut toggle = false;
         let mut turned = None;
         card(ui, |ui| {
             ui.horizontal(|ui| {
@@ -294,11 +305,21 @@ impl EditorApp {
                     ui.label(RichText::new(sub).font(theme::regular(13.0)).color(theme::TEXT_DIM));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    pill(ui, |ui| {
-                        dot(ui, if block.enabled { theme::ACCENT } else { theme::SWITCH_OFF }, 8.0);
-                        let state = if block.enabled { "On" } else { "Bypassed" };
-                        ui.label(RichText::new(state).font(theme::semibold(13.0)).color(if block.enabled { theme::TEXT } else { theme::TEXT_DIM }));
-                    });
+                    let response = Frame::new()
+                        .fill(theme::RAISED)
+                        .corner_radius(CornerRadius::same(255))
+                        .inner_margin(Margin::symmetric(14, 10))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                dot(ui, if block.enabled { theme::ACCENT } else { theme::SWITCH_OFF }, 8.0);
+                                let state = if block.enabled { "On" } else { "Bypassed" };
+                                ui.label(RichText::new(state).font(theme::semibold(13.0)).color(if block.enabled { theme::TEXT } else { theme::TEXT_DIM }));
+                            });
+                        })
+                        .response;
+                    if can_toggle && response.interact(Sense::click()).on_hover_text("Turn on or bypass").clicked() {
+                        toggle = true;
+                    }
                 });
             });
             ui.add_space(8.0);
@@ -336,6 +357,9 @@ impl EditorApp {
                 ui.add_space(GAP);
             }
         });
+        if toggle {
+            self.toggle_block(&key);
+        }
         let Some((name, value)) = turned else { return };
         if let Some(preset) = self.preset.as_mut() {
             preset.set_param(&key, &name, serde_json::json!(value));
@@ -466,10 +490,54 @@ impl EditorApp {
         self.status = "Connected · changes not saved".to_owned();
     }
 
-    /// Shows a preset the pedal switched to, by a click here or a footswitch.
+    /// The connection, when what is shown is the pedal's preset; a library file never reaches it.
+    fn live(&self) -> Option<&Connection> {
+        self.connection.as_ref().filter(|_| self.showing_file.is_none())
+    }
+
+    fn toggle_block(&mut self, key: &str) {
+        let Some(block) = self.preset.as_ref().and_then(|p| p.blocks().into_iter().find(|b| b.key == key)) else { return };
+        let Some(slot) = self.live().and_then(|c| c.addresses.get(key)).map(|a| a.slot) else { return };
+        if let Some(connection) = self.live() {
+            connection.live.set_enabled(slot, !block.enabled);
+        }
+        if let Some(preset) = self.preset.as_mut() {
+            preset.set_enabled(key, !block.enabled);
+        }
+    }
+
+    fn select_snapshot(&mut self, index: usize) {
+        let Some(connection) = self.live() else { return };
+        connection.live.select_snapshot(index as u64);
+        if let Some(preset) = self.preset.as_mut() {
+            preset.set_current_snapshot(index);
+        }
+    }
+
+    /// Applies parameter changes the pedal reported to the preset they belong to, skipping the knob
+    /// being dragged here so its own echoes do not pull it back.
+    fn take_changes(&mut self) {
+        let Some(connection) = self.connection.as_ref() else { return };
+        for change in connection.live.changes() {
+            let found = connection.addresses.iter().find(|(_, a)| a.slot == change.slot && a.sub == change.sub);
+            let Some((key, name)) = found.and_then(|(key, a)| Some((key.clone(), a.params.get(change.param as usize)?.clone()))) else { continue };
+            if self.drag.as_ref().is_some_and(|d| d.block == key && d.param == name) {
+                continue;
+            }
+            let target = if self.showing_file.is_some() { self.pedal_preset.as_mut() } else { self.preset.as_mut() };
+            if let Some(preset) = target {
+                preset.set_param(&key, &name, serde_json::json!(change.value));
+            }
+        }
+    }
+
+    /// Shows the preset the pedal holds after a switch, by a click here or a footswitch, or after a
+    /// snapshot or block change, which keeps the selected block. While a library file is shown, only
+    /// the kept pedal preset is updated.
     fn take_loaded(&mut self) {
         let Some(connection) = self.connection.as_mut() else { return };
         let Some(loaded) = connection.live.loaded() else { return };
+        let same_preset = loaded.index.is_some() && loaded.index == connection.current;
         let shown = loaded.to_hlx(&connection.syms).and_then(|hlx| Ok((hlx, loaded.addresses(&connection.syms)?)));
         match shown {
             Ok((hlx, addresses)) => {
@@ -478,25 +546,39 @@ impl EditorApp {
                 if let Some(entry) = connection.presets.iter_mut().find(|p| Some(p.index) == loaded.index) {
                     entry.name = loaded.name.clone();
                 }
-                self.selected_block = hlx.blocks().first().map(|b| b.key.clone());
+                if self.showing_file.is_some() && same_preset {
+                    self.pedal_preset = Some(hlx);
+                    return;
+                }
+                let keep = same_preset && self.selected_block.as_ref().is_some_and(|k| hlx.blocks().iter().any(|b| &b.key == k));
+                if !keep {
+                    self.selected_block = hlx.blocks().first().map(|b| b.key.clone());
+                    self.drag = None;
+                }
                 self.preset = Some(hlx);
                 self.showing_file = None;
                 self.pedal_preset = None;
-                self.drag = None;
                 self.status = "Connected · changes not saved".to_owned();
             }
             Err(e) => self.status = format!("HX Stomp: {e}"),
         }
     }
 
-    fn snapshots(&self, ui: &mut Ui) {
+    fn snapshots(&mut self, ui: &mut Ui) {
+        let live = self.live().is_some();
         let Some(preset) = &self.preset else { return };
         let current = preset.current_snapshot();
+        let mut pick = None;
         for (i, name) in preset.snapshot_names().iter().enumerate() {
             let active = i == current;
-            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::hover());
+            let sense = if live { Sense::click() } else { Sense::hover() };
+            let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), sense);
+            if response.clicked() && !active {
+                pick = Some(i);
+            }
             let painter = ui.painter();
-            painter.rect_filled(rect, CornerRadius::same(12), if active { theme::RAISED_HI } else { theme::RAISED });
+            let fill = if active || (live && response.hovered()) { theme::RAISED_HI } else { theme::RAISED };
+            painter.rect_filled(rect, CornerRadius::same(12), fill);
             if active {
                 painter.rect_stroke(rect, CornerRadius::same(12), Stroke::new(2.0, theme::ACCENT), StrokeKind::Inside);
             }
@@ -505,6 +587,9 @@ impl EditorApp {
             painter.text(badge.center(), Align2::CENTER_CENTER, (i + 1).to_string(), mono(13.0), if active { theme::BG } else { theme::TEXT_DIM });
             painter.text(pos2(rect.left() + 54.0, rect.center().y), Align2::LEFT_CENTER, name, theme::semibold(14.0), theme::TEXT);
             ui.add_space(6.0);
+        }
+        if let Some(index) = pick {
+            self.select_snapshot(index);
         }
     }
 
@@ -568,6 +653,17 @@ impl EditorApp {
             }
         });
     }
+}
+
+/// What a click in the chain asked for.
+enum ChainClick {
+    Select(String),
+    Toggle(String),
+}
+
+/// The centre of a block tile's power icon.
+fn power_center(rect: Rect) -> Pos2 {
+    pos2(rect.right() - 20.0, rect.top() + 22.0)
 }
 
 /// Where the chain's cells are: column 0 is the input, the last column the outputs, and slot `n`
@@ -787,6 +883,7 @@ fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, c
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.take_loaded();
+        self.take_changes();
         if let Some(connection) = &self.connection {
             if let Some(error) = connection.live.errors().pop() {
                 self.status = format!("HX Stomp: {error}");

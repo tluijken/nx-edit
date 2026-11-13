@@ -119,3 +119,20 @@ fn set_param_ignores_unknown_blocks_parameters_and_metadata() {
     assert!(!preset.set_param("block2", "@model", serde_json::json!("x")));
     assert_eq!(preset, before);
 }
+
+#[test]
+fn set_enabled_switches_a_block() {
+    let mut preset = Preset::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+    let enabled = |p: &Preset| p.blocks().into_iter().find(|b| b.key == "block4").unwrap().enabled;
+    let before = enabled(&preset);
+    assert!(preset.set_enabled("block4", !before));
+    assert_eq!(enabled(&preset), !before);
+    assert!(!preset.set_enabled("block99", true));
+}
+
+#[test]
+fn set_current_snapshot_moves_the_active_snapshot() {
+    let mut preset = Preset::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+    preset.set_current_snapshot(2);
+    assert_eq!(preset.current_snapshot(), 2);
+}
