@@ -2,6 +2,7 @@ mod account;
 mod cli;
 mod customtone;
 mod device;
+mod history;
 mod layout;
 mod library;
 mod live;

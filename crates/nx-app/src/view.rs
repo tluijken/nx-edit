@@ -9,6 +9,7 @@ use nx_catalog::Catalog;
 use nx_hlx::Preset;
 
 use crate::device::BlockAddress;
+use crate::history::{History, Turn};
 use crate::layout::{Branch, Lane, Tile, branch, display_value, dragged, lanes, slot_columns};
 use crate::live::{Live, Loaded, ParamChange, Update};
 use crate::theme;
@@ -74,6 +75,8 @@ pub struct EditorApp {
     showing_file: Option<std::path::PathBuf>,
     /// A library preset being renamed, and the name typed so far.
     renaming: Option<(std::path::PathBuf, String)>,
+    /// Knob turns on the pedal's preset, for undo and redo.
+    history: History,
     /// The pedal's preset, kept while a library file is shown.
     pedal_preset: Option<Preset>,
     screen: Screen,
@@ -101,6 +104,7 @@ impl EditorApp {
             library: crate::library::scan(&crate::library::default_dir()),
             showing_file: None,
             renaming: None,
+            history: History::default(),
             pedal_preset: None,
             screen: Screen::Editor,
             customtone: Default::default(),
@@ -354,8 +358,11 @@ impl EditorApp {
                                 turned = Some((name.clone(), next));
                             }
                         }
-                        if response.drag_stopped() {
-                            self.drag = None;
+                        if response.drag_stopped()
+                            && let Some(drag) = self.drag.take()
+                        {
+                            let after = turned.as_ref().filter(|(n, _)| n == name).map_or(v, |(_, next)| *next);
+                            self.history.push(Turn { block: drag.block, param: drag.param, before: drag.start, after });
                         }
                     }
                 });
@@ -366,14 +373,42 @@ impl EditorApp {
             self.toggle_block(&key);
         }
         let Some((name, value)) = turned else { return };
+        self.set_param(&key, &name, value);
+    }
+
+    /// Sets a parameter of the pedal's preset, on screen and on the pedal.
+    fn set_param(&mut self, key: &str, name: &str, value: f64) {
         if let Some(preset) = self.preset.as_mut() {
-            preset.set_param(&key, &name, serde_json::json!(value));
+            preset.set_param(key, name, serde_json::json!(value));
         }
         if let Some(connection) = self.live()
-            && let Some(address) = connection.addresses.get(&key)
-            && let Some(param) = address.param(&name)
+            && let Some(address) = connection.addresses.get(key)
+            && let Some(param) = address.param(name)
         {
             connection.live.set(connection.generation, address.slot, address.sub, param, value as f32);
+        }
+    }
+
+    /// Ctrl+Z takes the last knob turn back, Ctrl+Shift+Z or Ctrl+Y makes it again; only on the
+    /// pedal's preset and while no text field has the keyboard.
+    fn undo_keys(&mut self, ctx: &egui::Context) {
+        if self.live().is_none() || ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+        let (undo, redo) = ctx.input(|i| {
+            let z = i.modifiers.command && i.key_pressed(egui::Key::Z);
+            (z && !i.modifiers.shift, (z && i.modifiers.shift) || (i.modifiers.command && i.key_pressed(egui::Key::Y)))
+        });
+        let step = if undo {
+            self.history.undo().map(|t| (t.block, t.param, t.before))
+        } else if redo {
+            self.history.redo().map(|t| (t.block, t.param, t.after))
+        } else {
+            None
+        };
+        if let Some((block, param, value)) = step {
+            self.selected_block = Some(block.clone());
+            self.set_param(&block, &param, value);
         }
     }
 
@@ -634,6 +669,7 @@ impl EditorApp {
     /// snapshot or block change, which keeps the selected block. While a library file is shown, only
     /// the kept pedal preset is updated. A preset nx-edit cannot show leaves the knobs read-only.
     fn apply_loaded(&mut self, loaded: Loaded) {
+        self.history.clear();
         let Some(connection) = self.connection.as_mut() else { return };
         let Loaded { generation, preset: loaded } = loaded;
         let same_preset = loaded.index.is_some() && loaded.index == connection.current;
@@ -1000,6 +1036,7 @@ impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.take_updates();
         self.take_dropped_files(ui.ctx());
+        self.undo_keys(ui.ctx());
         if let Some(connection) = &self.connection {
             if let Some(error) = connection.live.errors().pop() {
                 self.status = format!("HX Stomp: {error}");
