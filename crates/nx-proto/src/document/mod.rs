@@ -38,6 +38,8 @@ pub enum DocError {
     Trailing(usize),
     #[error("unexpected document shape: {0}")]
     Shape(String),
+    #[error("invalid edit: {0}")]
+    Value(String),
 }
 
 fn shape(what: impl Into<String>) -> DocError {
@@ -130,7 +132,9 @@ impl Document {
             .and_then(|v| v.get_mut(4))
             .and_then(|v| v.index_mut(index))
             .ok_or_else(|| shape(format!("slot {slot} has no value {index}")))?;
-        *target = value.into_item();
+        *target = value.convert_to(target).ok_or_else(|| {
+            DocError::Value(format!("slot {slot} value {index} is {target:?} and cannot hold {value:?}"))
+        })?;
         Ok(())
     }
 
@@ -224,12 +228,25 @@ impl ParamValue {
         }
     }
 
-    fn into_item(self) -> Item {
-        match self {
-            Self::Float(f) => Item::F32(f),
-            Self::Int(i) => Item::int(i),
-            Self::Bool(b) => Item::Bool(b),
-            Self::Other(item) => item,
+    /// This value in the type and encoding of `stored`, or `None` if that type cannot hold it
+    /// exactly. The device's own documents decide a value's type; an edit must not change it.
+    fn convert_to(&self, stored: &Item) -> Option<Item> {
+        let exact_int = |f: f64| (f.fract() == 0.0 && f >= i64::MIN as f64 && f < i64::MAX as f64).then_some(f as i64);
+        match (stored, self) {
+            (Item::F32(_), Self::Float(f)) => Some(Item::F32(*f)),
+            (Item::F32(_), Self::Int(i)) => (*i != i64::MAX && (*i as f32) as i64 == *i).then_some(Item::F32(*i as f32)),
+            (Item::F64(_), Self::Float(f)) => Some(Item::F64(f64::from(*f))),
+            (Item::F64(_), Self::Int(i)) => (*i != i64::MAX && (*i as f64) as i64 == *i).then_some(Item::F64(*i as f64)),
+            (Item::Int(_, form), Self::Int(i)) => tree::fits(*i, *form).then_some(Item::Int(*i, *form)),
+            (Item::Int(_, form), Self::Float(f)) => {
+                exact_int(f64::from(*f)).filter(|i| tree::fits(*i, *form)).map(|i| Item::Int(i, *form))
+            }
+            (Item::Bool(_), Self::Bool(b)) => Some(Item::Bool(*b)),
+            (Item::Int(..) | Item::F32(_) | Item::F64(_) | Item::Bool(_), _) => None,
+            (stored, Self::Other(item)) => {
+                (std::mem::discriminant(stored) == std::mem::discriminant(item)).then(|| item.clone())
+            }
+            _ => None,
         }
     }
 

@@ -156,7 +156,7 @@ fn shortest_int(v: i64) -> IntForm {
     }
 }
 
-fn fits(v: i64, form: IntForm) -> bool {
+pub(crate) fn fits(v: i64, form: IntForm) -> bool {
     match form {
         IntForm::Fix => (-32..=127).contains(&v),
         IntForm::U8 => (0..=0xff).contains(&v),

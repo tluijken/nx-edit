@@ -432,3 +432,31 @@ fn every_value_matches_the_hlx_by_helix_sym_parameter_name() {
     // The generator wrote Scale, which only the stereo Ducked Delay has; the device dropped it.
     assert_eq!(unknown, ["block4.Scale"]);
 }
+
+#[test]
+fn set_param_keeps_the_stored_type_and_encoding() {
+    let bytes = document("02-select-preset-01C");
+    let mut doc = Document::decode(&bytes).unwrap();
+    // Drive is an f32 and Aggression an integer: each keeps its type whichever kind of number arrives.
+    doc.set_param(3, 0, ParamValue::Int(1)).unwrap();
+    doc.set_param(3, 8, ParamValue::Float(2.0)).unwrap();
+    let amp = doc.preset().unwrap().blocks().find(|b| b.slot == 3).unwrap().block.values.values.clone();
+    assert_eq!(amp[0], ParamValue::Float(1.0));
+    assert_eq!(amp[8], ParamValue::Int(2));
+    assert_eq!(doc.encode().unwrap().len(), bytes.len(), "no value changed its width");
+}
+
+#[test]
+fn set_param_rejects_values_the_stored_type_cannot_hold() {
+    let mut doc = Document::decode(&document("02-select-preset-01C")).unwrap();
+    let before = doc.clone();
+    assert!(doc.set_param(3, 8, ParamValue::Float(1.5)).is_err(), "Aggression is an integer");
+    assert!(doc.set_param(3, 8, ParamValue::Int(300)).is_err(), "Aggression is a fixint");
+    assert!(doc.set_param(3, 0, ParamValue::Bool(true)).is_err(), "Drive is a number");
+    assert!(doc.set_param(5, 13, ParamValue::Float(1.0)).is_err(), "trails is a boolean");
+    assert!(doc.set_param(5, 13, ParamValue::Int(1)).is_err(), "trails is a boolean");
+    assert!(doc.set_param(3, 0, ParamValue::Other(nx_proto::Item::Nil)).is_err());
+    assert!(doc.set_param(3, 0, ParamValue::Int((1 << 40) + 1)).is_err(), "not exact as f32");
+    assert_eq!(doc, before, "a rejected edit changes nothing");
+    doc.set_param(5, 13, ParamValue::Bool(false)).unwrap();
+}

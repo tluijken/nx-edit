@@ -227,6 +227,10 @@ edit the tree in place. Applying to `02` what captures 03–05 did (Drive 0.6, t
 delay and hall on, cursor on slot 5, current snapshot 2) and encoding gives `05` byte for byte. How a
 document is *written* to the device has not been captured.
 
+The setters never change what the device wrote: `set_param` keeps a value's type and encoding (an
+integer stays an integer of the same width, an f32 stays f32) and rejects a value that type cannot
+hold exactly, a boolean for a number or the other way round, with `DocError::Value`.
+
 Note: capture 03 ends with Drive **0.6** (`SetParam 119: 0.6`, and the document agrees), not about
 0.55 as `captures/README.md` estimates.
 
