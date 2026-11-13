@@ -6,7 +6,7 @@ use std::path::Path;
 
 use nx_capture::{Filter, read_transfers};
 use nx_catalog::ModelSymbols;
-use nx_proto::{Document, ParamValue, RPC_CHANNEL, Reassembler, Request, SlotKind, split_transfer};
+use nx_proto::{Document, Frame, ParamValue, RPC_CHANNEL, Reassembler, Request, SlotKind, split_transfer};
 use rmpv::Value;
 use serde_json::{Map, json};
 
@@ -20,43 +20,51 @@ pub fn preset_from_capture(path: &Path) -> Result<DevicePreset, String> {
     let filter = Filter { endpoints: Some(vec![0x01, 0x81]), ..Default::default() };
     let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let transfers = read_transfers(file, &filter).map_err(|e| e.to_string())?;
+    let mut frames = Vec::new();
+    for t in &transfers {
+        frames.extend(split_transfer(&t.data).map_err(|e| e.to_string())?);
+    }
+    preset_from_frames(frames)?.ok_or_else(|| format!("{}: no preset document in this capture", path.display()))
+}
+
+/// The last preset read in a stream of frames, if any.
+fn preset_from_frames(frames: impl IntoIterator<Item = Frame>) -> Result<Option<DevicePreset>, String> {
     let mut reassembler = Reassembler::default();
     let mut asked: Vec<(u64, u64)> = Vec::new();
     let (mut name, mut document) = (None, None);
-    for t in &transfers {
-        for frame in split_transfer(&t.data).map_err(|e| e.to_string())? {
-            for msg in reassembler.push(&frame).map_err(|e| e.to_string())? {
-                let Ok(value) = msg.decode() else { continue };
-                if msg.from_host && msg.src == RPC_CHANNEL {
-                    if let Some((txn, request)) = Request::from_value(&value) {
-                        asked.push((txn, request.opcode()));
-                    }
-                    continue;
+    for frame in frames {
+        for msg in reassembler.push(&frame).map_err(|e| e.to_string())? {
+            let Ok(value) = msg.decode() else { continue };
+            if msg.from_host && msg.src == RPC_CHANNEL {
+                if let Some((txn, request)) = Request::from_value(&value) {
+                    asked.push((txn, request.opcode()));
                 }
-                if msg.from_host || msg.dst != RPC_CHANNEL {
-                    continue;
+                continue;
+            }
+            if msg.from_host || msg.dst != RPC_CHANNEL {
+                continue;
+            }
+            let Some(reply) = value.as_map() else { continue };
+            let field = |k| reply.iter().find(|(key, _)| key.as_u64() == Some(k)).map(|(_, v)| v);
+            let Some(txn) = field(102).and_then(Value::as_u64) else { continue };
+            // Transaction ids start again on every connect; a reply answers the latest request.
+            let Some(&(_, opcode)) = asked.iter().rev().find(|(t, _)| *t == txn) else { continue };
+            match (opcode, field(104)) {
+                // The document travels as a MessagePack str, not bin, although it is not UTF-8.
+                (22, Some(Value::String(s))) => document = Some(s.as_bytes().to_vec()),
+                (23, Some(info)) => {
+                    let found = info
+                        .as_map()
+                        .and_then(|m| m.iter().find(|(k, _)| k.as_u64() == Some(109)))
+                        .and_then(|(_, v)| v.as_str())
+                        .map(|s| s.trim_end_matches('\0').to_owned());
+                    name = found.or(name);
                 }
-                let Some(reply) = value.as_map() else { continue };
-                let field = |k| reply.iter().find(|(key, _)| key.as_u64() == Some(k)).map(|(_, v)| v);
-                let Some(txn) = field(102).and_then(Value::as_u64) else { continue };
-                let Some(&(_, opcode)) = asked.iter().find(|(t, _)| *t == txn) else { continue };
-                match (opcode, field(104)) {
-                    // The document travels as a MessagePack str, not bin, although it is not UTF-8.
-                    (22, Some(Value::String(s))) => document = Some(s.as_bytes().to_vec()),
-                    (23, Some(info)) => {
-                        name = info
-                            .as_map()
-                            .and_then(|m| m.iter().find(|(k, _)| k.as_u64() == Some(109)))
-                            .and_then(|(_, v)| v.as_str())
-                            .map(|s| s.trim_end_matches('\0').to_owned());
-                    }
-                    _ => {}
-                }
+                _ => {}
             }
         }
     }
-    let document = document.ok_or_else(|| format!("{}: no preset document in this capture", path.display()))?;
-    Ok(DevicePreset { name: name.unwrap_or_default(), document })
+    Ok(document.map(|document| DevicePreset { name: name.unwrap_or_default(), document }))
 }
 
 impl DevicePreset {
@@ -193,6 +201,59 @@ mod tests {
         let Some(syms) = helix_sym() else { return };
         let lead = preset_from_capture(&capture("05-snapshot-switch")).unwrap().to_hlx(&syms).unwrap();
         assert_eq!(lead.current_snapshot(), 2);
+    }
+
+    fn message(from_host: bool, body: &Value) -> Frame {
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(&mut bytes, body).unwrap();
+        let mut msg = vec![u8::from(from_host), 0, 6, 0];
+        msg.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        msg.extend_from_slice(&bytes);
+        let (src, dst) = if from_host { (RPC_CHANNEL, 0x03ed) } else { (0x03ed, RPC_CHANNEL) };
+        Frame::channel(src, dst, 2, nx_proto::FrameKind::Data, 0x1000, &msg)
+    }
+
+    fn request(txn: u64, request: Request) -> Frame {
+        message(true, &rmpv::decode::read_value(&mut &request.encode(txn)[..]).unwrap())
+    }
+
+    fn reply(txn: u64, result: Value) -> Frame {
+        message(false, &Value::Map(vec![(102.into(), txn.into()), (103.into(), 0.into()), (104.into(), result)]))
+    }
+
+    fn info(name: Option<&str>) -> Value {
+        Value::Map(name.map(|n| (109.into(), Value::from(format!("{n}\0")))).into_iter().collect())
+    }
+
+    #[test]
+    fn a_reused_transaction_id_belongs_to_the_latest_request() {
+        // A reconnect starts the transaction ids again, so 1000 is op 23 first and op 22 later.
+        let frames = [
+            request(1000, Request::PresetInfo),
+            reply(1000, info(Some("Old"))),
+            request(1001, Request::PresetDocument),
+            reply(1001, Value::from("old document")),
+            request(1000, Request::PresetDocument),
+            reply(1000, Value::from("new document")),
+            request(1001, Request::PresetInfo),
+            reply(1001, info(Some("New"))),
+        ];
+        let preset = preset_from_frames(frames).unwrap().unwrap();
+        assert_eq!(preset.document, b"new document");
+        assert_eq!(preset.name, "New");
+    }
+
+    #[test]
+    fn a_preset_info_without_a_name_keeps_the_name() {
+        let frames = [
+            request(1000, Request::PresetInfo),
+            reply(1000, info(Some("Revv DM"))),
+            request(1001, Request::PresetDocument),
+            reply(1001, Value::from("document")),
+            request(1002, Request::PresetInfo),
+            reply(1002, info(None)),
+        ];
+        assert_eq!(preset_from_frames(frames).unwrap().unwrap().name, "Revv DM");
     }
 
     #[test]
