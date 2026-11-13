@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-pub const USAGE: &str = "usage: nx-edit [preset.hlx]\n       nx-edit --from-capture <capture.pcapng>\n       nx-edit --from-device\n       nx-edit --import-hxedit <HX Edit installer.exe>";
+pub const USAGE: &str = "usage: nx-edit [preset.hlx]\n       nx-edit --from-capture <capture.pcapng>\n       nx-edit --from-device\n       nx-edit --import-hxedit <HX Edit installer.exe | HX Edit folder>";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
@@ -14,7 +14,7 @@ pub enum Command {
 pub fn parse(args: &[String]) -> Command {
     match args {
         [] => Command::Open(None),
-        [flag, installer] if flag == "--import-hxedit" => Command::Import(PathBuf::from(installer)),
+        [flag, source] if flag == "--import-hxedit" => Command::Import(PathBuf::from(source)),
         [flag, capture] if flag == "--from-capture" => Command::OpenCapture(PathBuf::from(capture)),
         [flag] if flag == "--from-device" => Command::OpenDevice,
         [path] if !path.starts_with("--") => Command::Open(Some(PathBuf::from(path))),
@@ -29,7 +29,7 @@ pub fn catalog_status(err: &nx_catalog::CatalogError, res_dir: &Path) -> String 
         nx_catalog::CatalogError::Io { path, source }
             if path == res_dir && source.kind() == std::io::ErrorKind::NotFound =>
         {
-            "No HX Edit data; import it with nx-edit --import-hxedit <installer>".to_owned()
+            "No HX Edit data; import it with nx-edit --import-hxedit <installer or HX Edit folder>".to_owned()
         }
         other => format!("HX Edit data in {} not loaded: {other}", res_dir.display()),
     }
@@ -54,9 +54,10 @@ mod tests {
     }
 
     #[test]
-    fn import_needs_an_installer() {
+    fn import_needs_an_installer_or_a_folder() {
         assert_eq!(parse(&args(&["--import-hxedit"])), Command::Usage);
         assert_eq!(parse(&args(&["--import-hxedit", "x.exe"])), Command::Import(PathBuf::from("x.exe")));
+        assert_eq!(parse(&args(&["--import-hxedit", "HX Edit"])), Command::Import(PathBuf::from("HX Edit")));
     }
 
     #[test]

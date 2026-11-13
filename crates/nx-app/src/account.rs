@@ -1,9 +1,11 @@
 //! The Line 6 account nx-edit signs in with: the user name in a file next to the library, the
-//! password in the desktop's Secret Service, never on disk in the clear.
+//! password in the desktop's Secret Service (the Windows Credential Manager on Windows), never on
+//! disk in the clear. `keyring`'s `v1` entry picks that store per target.
 
 use std::path::{Path, PathBuf};
 
 const SERVICE: &str = "nx-edit";
+const STORE: &str = if cfg!(windows) { "Windows Credential Manager" } else { "Secret Service" };
 const USER_FILE: &str = "line6-user";
 
 /// Where the user name file lives: beside the library, in nx-edit's data directory.
@@ -47,7 +49,7 @@ pub fn remember(user: &str, password: &str) -> Result<(), String> {
     if load_user(&data_dir()).is_some_and(|old| old != user) {
         forget()?;
     }
-    entry(user)?.set_password(password).map_err(|e| format!("Secret Service: {e}"))?;
+    entry(user)?.set_password(password).map_err(|e| format!("{STORE}: {e}"))?;
     save_user(&data_dir(), user).map_err(|e| e.to_string())
 }
 
@@ -58,7 +60,7 @@ pub fn forget() -> Result<(), String> {
     if let Some(user) = load_user(&dir) {
         match entry(&user)?.delete_credential() {
             Ok(()) | Err(keyring::v1::Error::NoEntry) => {}
-            Err(e) => return Err(format!("Secret Service: {e}")),
+            Err(e) => return Err(format!("{STORE}: {e}")),
         }
     }
     forget_user(&dir).map_err(|e| e.to_string())

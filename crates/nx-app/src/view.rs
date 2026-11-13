@@ -988,7 +988,8 @@ enum LibraryAction {
 }
 
 fn open_in_file_manager(dir: &std::path::Path) {
-    _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    _ = std::process::Command::new(opener).arg(dir).spawn();
 }
 
 /// What a click in the chain asked for.

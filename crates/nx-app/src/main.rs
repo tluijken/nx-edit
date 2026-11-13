@@ -22,9 +22,9 @@ fn main() -> eframe::Result {
         cli::Command::Open(path) => (path, None),
         cli::Command::OpenCapture(path) => (None, Some(Source::Capture(path))),
         cli::Command::OpenDevice => (None, Some(Source::Device)),
-        cli::Command::Import(installer) => {
+        cli::Command::Import(source) => {
             let dest = nx_catalog::default_res_dir();
-            match nx_catalog::import_installer(&installer, &dest) {
+            match nx_catalog::import_hxedit(&source, &dest) {
                 Ok(()) => println!("HX Edit data imported into {}", dest.display()),
                 Err(e) => {
                     eprintln!("{e}");
