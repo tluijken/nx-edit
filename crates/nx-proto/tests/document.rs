@@ -91,7 +91,7 @@ fn captured_documents_reencode_byte_for_byte() {
 fn section_table_points_at_top_level_keys() {
     let doc = Document::decode(&document("02-select-preset-01C")).unwrap();
     // map start, keys 0 1 3 4 2 5 6 7 10, then the total length twice.
-    assert_eq!(doc.sections(), &[61, 96, 904, 906, 917, 1040, 1280, 1325, 62, 1331, 2801, 2801]);
+    assert_eq!(doc.sections().unwrap(), [61, 96, 904, 906, 917, 1040, 1280, 1325, 62, 1331, 2801, 2801]);
 }
 
 #[test]
@@ -387,11 +387,11 @@ fn growing_a_value_moves_the_section_table() {
     assert_eq!(again.preset().unwrap().snapshots.list[0].name, "a name of more than thirty-one bytes");
     let delta = grown.len() as u32 - bytes.len() as u32;
     let before = Document::decode(&bytes).unwrap();
-    for (old, new) in before.sections().iter().zip(again.sections()) {
+    for (old, new) in before.sections().unwrap().iter().zip(again.sections().unwrap()) {
         // Snapshots (key 10) come last, so only the two trailing totals move.
-        assert!(*new == *old || *new == *old + delta);
+        assert!(new == *old || new == *old + delta);
     }
-    assert_eq!(again.sections()[10], grown.len() as u32);
+    assert_eq!(again.sections().unwrap()[10], grown.len() as u32);
 }
 
 /// HX Edit's `Helix.sym`, which is Line 6's and not in the repo; `None` (test skipped) without it.
@@ -459,4 +459,46 @@ fn set_param_rejects_values_the_stored_type_cannot_hold() {
     assert!(doc.set_param(3, 0, ParamValue::Int((1 << 40) + 1)).is_err(), "not exact as f32");
     assert_eq!(doc, before, "a rejected edit changes nothing");
     doc.set_param(5, 13, ParamValue::Bool(false)).unwrap();
+}
+
+fn table_word(bytes: &[u8], i: usize) -> u32 {
+    // fixstr magic (10 bytes), then the str16 head of the table (3 bytes).
+    let at = 13 + i * 4;
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+fn set_table_word(bytes: &mut [u8], at: usize, i: usize, value: u32) {
+    bytes[at + i * 4..at + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+#[test]
+fn a_section_table_that_does_not_match_the_document_is_rejected() {
+    let mut bytes = document("02-select-preset-01C");
+    let word = table_word(&bytes, 3);
+    set_table_word(&mut bytes, 13, 3, word + 1);
+    assert!(matches!(Document::decode(&bytes), Err(nx_proto::DocError::TableMismatch { .. })));
+}
+
+#[test]
+fn the_magic_keeps_its_encoding() {
+    // The same document with the magic written as str8 instead of fixstr: one byte longer, so every
+    // offset in the table moves by one.
+    let captured = document("02-select-preset-01C");
+    let mut bytes = vec![0xd9, 9];
+    bytes.extend_from_slice(&captured[1..]);
+    for i in 0..12 {
+        let word = table_word(&captured, i);
+        set_table_word(&mut bytes, 14, i, word + 1);
+    }
+    let doc = Document::decode(&bytes).unwrap();
+    assert!(doc.encode().unwrap() == bytes, "the magic went back to fixstr");
+}
+
+#[test]
+fn sections_are_the_table_encode_writes() {
+    let mut doc = Document::decode(&document("02-select-preset-01C")).unwrap();
+    doc.set_snapshot_name(0, "Lead Clean").unwrap();
+    let encoded = doc.encode().unwrap();
+    let written: Vec<u32> = (0..12).map(|i| table_word(&encoded, i)).collect();
+    assert_eq!(doc.sections().unwrap(), written);
 }

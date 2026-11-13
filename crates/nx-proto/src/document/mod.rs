@@ -34,6 +34,8 @@ pub enum DocError {
     Unsupported { offset: usize, what: &'static str },
     #[error("section table of {0} bytes; only the 48-byte form has been seen")]
     Table(usize),
+    #[error("section table {read:?} does not match the document, which places its sections at {computed:?}")]
+    TableMismatch { read: Vec<u32>, computed: Vec<u32> },
     #[error("{0} bytes after the preset map")]
     Trailing(usize),
     #[error("unexpected document shape: {0}")]
@@ -48,22 +50,25 @@ fn shape(what: impl Into<String>) -> DocError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Document {
-    sections: Vec<u32>,
+    magic_form: LenForm,
+    table_form: LenForm,
     tone: Item,
 }
 
 impl Document {
+    /// Reads a document and checks that its section table is the one [`Document::encode`] would
+    /// write, so that encoding an unedited document can never quietly change the table.
     pub fn decode(bytes: &[u8]) -> Result<Self, DocError> {
         let mut r = Reader::new(bytes);
-        if r.item().ok().as_ref().and_then(Item::as_str_bytes) != Some(MAGIC) {
-            return Err(DocError::Magic);
-        }
-        let table = r.item()?;
-        let table = table.as_str_bytes().ok_or_else(|| shape("section table is not a string"))?;
+        let magic_form = match r.item() {
+            Ok(Item::Str(s, form)) if s == MAGIC => form,
+            _ => return Err(DocError::Magic),
+        };
+        let Item::Str(table, table_form) = r.item()? else { return Err(shape("section table is not a string")) };
         if table.len() != TABLE_WORDS * 4 {
             return Err(DocError::Table(table.len()));
         }
-        let sections = table.chunks(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
+        let read: Vec<u32> = table.chunks(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
         let tone = r.item()?;
         if tone.as_map().is_none() {
             return Err(shape("preset is not a map"));
@@ -71,16 +76,31 @@ impl Document {
         if !r.at_end() {
             return Err(DocError::Trailing(bytes.len() - r.pos));
         }
-        Ok(Self { sections, tone })
+        let doc = Self { magic_form, table_form, tone };
+        let computed = doc.layout()?.1;
+        if computed != read {
+            return Err(DocError::TableMismatch { read, computed });
+        }
+        Ok(doc)
     }
 
     /// Writes the document, with the section table recomputed from where the sections land.
     pub fn encode(&self) -> Result<Vec<u8>, DocError> {
+        Ok(self.layout()?.0)
+    }
+
+    /// The section table [`Document::encode`] writes: offsets of the map and of top-level keys
+    /// 0 1 3 4 2 5 6 7 10, then the total length twice. For a document that was not edited it is the
+    /// table that was read.
+    pub fn sections(&self) -> Result<Vec<u32>, DocError> {
+        Ok(self.layout()?.1)
+    }
+
+    fn layout(&self) -> Result<(Vec<u8>, Vec<u32>), DocError> {
         let mut out = Vec::new();
-        Item::Str(MAGIC.to_vec(), LenForm::Fix).write(&mut out);
-        out.extend_from_slice(&[0xda, 0, (TABLE_WORDS * 4) as u8]);
-        let table_at = out.len();
-        out.resize(table_at + TABLE_WORDS * 4, 0);
+        Item::Str(MAGIC.to_vec(), self.magic_form).write(&mut out);
+        Item::Str(vec![0; TABLE_WORDS * 4], self.table_form).write(&mut out);
+        let table_at = out.len() - TABLE_WORDS * 4;
         let Item::Map(entries, form) = &self.tone else { return Err(shape("preset is not a map")) };
         let map_at = out.len();
         tree::write_map_head(&mut out, entries.len(), *form);
@@ -100,13 +120,7 @@ impl Document {
         for (i, w) in words.iter().enumerate() {
             out[table_at + i * 4..table_at + i * 4 + 4].copy_from_slice(&w.to_le_bytes());
         }
-        Ok(out)
-    }
-
-    /// The section table as read: offsets of the map and of top-level keys 0 1 3 4 2 5 6 7 10, then
-    /// the total length twice.
-    pub fn sections(&self) -> &[u32] {
-        &self.sections
+        Ok((out, words))
     }
 
     /// The whole preset map, including everything [`Preset`] does not interpret.

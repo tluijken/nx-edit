@@ -116,7 +116,9 @@ map    the preset, 9 integer keys in the order 7 0 1 3 4 2 5 6 10
 The table holds byte offsets from the start of the document: the preset map, then the **key byte**
 of top-level keys 0 1 3 4 2 5 6 7 10 (in that order, not map order), then the total length twice
 [seen: `61 96 904 906 917 1040 1280 1325 62 1331 2801 2801`]. The encoder recomputes it; whether the
-device checks it on a write is untested. PROTOCOL.md's 10-word form from older firmware [map] is
+device checks it on a write is untested. `Document::decode` rejects a document whose table differs
+from the one the encoder would write, so an unedited round trip never changes it, and the encoder
+keeps the length forms the magic and the table were read with. PROTOCOL.md's 10-word form from older firmware [map] is
 rejected rather than guessed at.
 
 The inner MessagePack is **not canonical**: top-level key 2 writes its zeros as int16 (`d1 00 00`)
