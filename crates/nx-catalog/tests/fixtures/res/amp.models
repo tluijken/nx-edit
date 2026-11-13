@@ -1,0 +1,23 @@
+[
+  {
+    "symbolicID": "HD2_AmpPVPanama",
+    "name": "PV Panama",
+    "category": 1,
+    "load": 20.0,
+    "params": [
+      { "symbolicID": "Drive", "name": "Drive", "valueType": 1, "displayType": "generic_knob", "min": 0.0, "max": 1.0, "default": 0.5 },
+      { "symbolicID": "Master", "name": "Master", "valueType": 1, "displayType": "generic_knob", "min": 0.0, "max": 1.0, "default": 0.5 }
+    ]
+  },
+  {
+    "symbolicID": "HD2_AmpRevvGenRed",
+    "name": "Revv Gen Red",
+    "category": 1,
+    "load": 20.0,
+    "params": [
+      { "symbolicID": "Drive", "name": "Drive", "valueType": 1, "displayType": "generic_knob", "min": 0.0, "max": 1.0, "default": 0.5 },
+      { "symbolicID": "Master", "name": "Master", "valueType": 1, "displayType": "generic_knob", "min": 0.0, "max": 1.0, "default": 0.5 },
+      { "symbolicID": "@enabled", "name": "Enabled", "valueType": 2, "min": false, "max": true, "default": true }
+    ]
+  }
+]

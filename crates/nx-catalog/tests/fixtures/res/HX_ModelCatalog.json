@@ -1,0 +1,34 @@
+{
+  "categories": [
+    {
+      "id": 0,
+      "name": "None",
+      "color": "0xffffff",
+      "models": [{ "id": "None", "name": "(empty block)" }]
+    },
+    {
+      "id": 1,
+      "name": "Distortion",
+      "color": "0xf5901e",
+      "subcategories": [
+        {
+          "name": "Mono",
+          "id": 4,
+          "models": [
+            { "id": "HD2_DistKinkyBoost", "name": "Kinky Boost" },
+            { "id": "HD2_DistScream808", "name": "Scream 808" }
+          ]
+        },
+        {
+          "name": "Stereo",
+          "id": 5,
+          "models": [
+            { "id": "HD2_DistKinkyBoost", "use_subcategory": 4 },
+            { "id": "HD2_DistScream808", "use_subcategory": 4 }
+          ]
+        },
+        { "name": "Legacy", "id": 6, "models": [] }
+      ]
+    }
+  ]
+}

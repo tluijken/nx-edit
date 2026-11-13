@@ -1,5 +1,5 @@
-//! Signing in to line6.com, against pages saved on 2026-11-13: signed out, signed in to an account
-//! without a registered product, and a refused sign-in. Nothing personal is kept in them.
+//! Signing in to line6.com, against hand-written pages in the site's markup with invented tones:
+//! signed out, signed in to an account without a registered product, and a refused sign-in.
 
 use nx_customtone::{Account, account_state, login_form, parse_browse, sign_in_error};
 
@@ -39,7 +39,7 @@ fn a_signed_in_listing_still_parses() {
 
 #[test]
 fn a_refused_sign_in_reports_the_site_error() {
-    assert_eq!(sign_in_error(REFUSED), Some(257));
+    assert_eq!(sign_in_error(REFUSED), Some(312));
     assert_eq!(sign_in_error(SIGNED_IN), None);
 }
 
