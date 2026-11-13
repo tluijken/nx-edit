@@ -21,8 +21,8 @@ struct Answer {
 enum Reply {
     Page(Result<(BrowsePage, Account), String>),
     SignedIn { user: String, outcome: Result<Account, String> },
-    /// A tone downloaded into the library, or why not.
-    Saved(Result<std::path::PathBuf, String>),
+    /// A tone downloaded into the library, or why not; `assign` when it then goes to the pedal.
+    Saved { saved: Result<std::path::PathBuf, String>, assign: bool },
 }
 
 /// The sign-in form while it is open.
@@ -49,7 +49,7 @@ pub struct CustomToneView {
     open: Option<u64>,
     started: bool,
     /// Library files saved since the editor last asked, for it to list them.
-    saved: Vec<std::path::PathBuf>,
+    saved: Vec<Downloaded>,
     /// The last download's outcome, shown under the toolbar.
     notice: Option<String>,
     signing_in: bool,
@@ -146,12 +146,12 @@ impl CustomToneView {
                     self.form = None;
                     self.fetch(ctx);
                 }
-                Reply::Saved(Ok(path)) => {
+                Reply::Saved { saved: Ok(path), assign } => {
                     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                     self.notice = Some(format!("Downloaded \"{name}\" to the library (customtone)"));
-                    self.saved.push(path);
+                    self.saved.push(Downloaded { path, assign });
                 }
-                Reply::Saved(Err(e)) => self.error = Some(format!("Download failed: {e}")),
+                Reply::Saved { saved: Err(e), .. } => self.error = Some(format!("Download failed: {e}")),
                 Reply::Page(Err(e)) | Reply::SignedIn { outcome: Err(e), .. } => self.error = Some(e),
             }
         }
@@ -365,7 +365,10 @@ impl CustomToneView {
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 if can_download && ui.button("Download to library").clicked() {
-                                    download = Some(tone.id);
+                                    download = Some((tone.id, false));
+                                }
+                                if can_download && ui.button("Download and assign to the pedal…").clicked() {
+                                    download = Some((tone.id, true));
                                 }
                                 dot(ui, theme::ACCENT, 8.0);
                                 ui.hyperlink_to("Open on line6.com", format!("https://line6.com/customtone/tone/{}/", tone.id));
@@ -386,22 +389,29 @@ impl CustomToneView {
         if let Some(id) = toggle {
             self.open = if self.open == Some(id) { None } else { Some(id) };
         }
-        if let Some(id) = download {
+        if let Some((id, assign)) = download {
             self.notice = None;
             self.spawn(ui.ctx(), move |client| {
                 let saved = client
                     .download(id)
                     .map_err(|e| e.to_string())
                     .and_then(|d| crate::library::save_download(&crate::library::default_dir(), &d.file_name, &d.bytes));
-                Reply::Saved(saved)
+                Reply::Saved { saved, assign }
             });
         }
     }
 
     /// Library files downloaded since the last call.
-    pub fn take_saved(&mut self) -> Vec<std::path::PathBuf> {
+    pub fn take_saved(&mut self) -> Vec<Downloaded> {
         std::mem::take(&mut self.saved)
     }
+}
+
+/// A CustomTone tone saved into the library.
+pub struct Downloaded {
+    pub path: std::path::PathBuf,
+    /// The download was asked for to put the tone on the pedal.
+    pub assign: bool,
 }
 
 fn as_user(user: &Option<String>) -> String {

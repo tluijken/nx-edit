@@ -87,6 +87,8 @@ pub struct EditorApp {
     leaving: Option<Leave>,
     /// The window may close: the unsaved edits were saved or discarded.
     closing: bool,
+    /// A library preset whose place on the pedal is being chosen.
+    assigning: Option<crate::assign::Assign>,
 }
 
 /// Leaving a library file with unsaved edits, for another file, the pedal's preset, another
@@ -126,6 +128,7 @@ impl EditorApp {
             customtone: Default::default(),
             unsaved: false,
             leaving: None,
+            assigning: None,
             closing: false,
         }
     }
@@ -596,6 +599,69 @@ impl EditorApp {
         }
     }
 
+    fn start_assign(&mut self, file: std::path::PathBuf, name: String) {
+        self.assigning = Some(crate::assign::Assign { file, name, place: None, filter: String::new() });
+    }
+
+    /// Choosing the place on the pedal for a library preset, and saying what it replaces.
+    fn assign_modal(&mut self, ctx: &egui::Context) {
+        let Some(assign) = self.assigning.as_mut() else { return };
+        let presets = self.connection.as_ref().map(|c| c.presets.as_slice()).unwrap_or_default();
+        let mut close = false;
+        let frame = Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(18)).inner_margin(Margin::same(24));
+        let modal = egui::Modal::new(egui::Id::unique("assign-to-place")).frame(frame).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.spacing_mut().item_spacing.y = 12.0;
+            ui.label(RichText::new(format!("Assign \"{}\" to a place", assign.name)).font(theme::semibold(20.0)));
+            ui.label(RichText::new(assign.file.display().to_string()).font(theme::regular(12.0)).color(theme::TEXT_DIM));
+            if presets.is_empty() {
+                ui.label(RichText::new("Connect the HX Stomp to choose one of its places.").font(theme::regular(14.0)).color(theme::TEXT_DIM));
+            } else {
+                Frame::new().fill(theme::BG).corner_radius(CornerRadius::same(255)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut assign.filter).hint_text("Find a place: 03B or a name").frame(Frame::NONE).desired_width(f32::INFINITY));
+                });
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for entry in crate::assign::places(presets, &assign.filter) {
+                        let chosen = assign.place == Some(entry.index);
+                        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+                        if chosen {
+                            ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED_HI);
+                            ui.painter().rect_stroke(rect, CornerRadius::same(10), Stroke::new(2.0, theme::ACCENT), StrokeKind::Inside);
+                        } else if response.hovered() {
+                            ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED);
+                        }
+                        let label = nx_proto::slot_label(entry.index);
+                        ui.painter().text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, &label, mono(13.0), if chosen { theme::ACCENT } else { theme::TEXT_DIM });
+                        ui.painter().text(rect.left_center() + vec2(60.0, 0.0), Align2::LEFT_CENTER, &entry.name, theme::regular(14.0), theme::TEXT_MID);
+                        if response.clicked() {
+                            assign.place = Some(entry.index);
+                        }
+                    }
+                });
+                if let Some(place) = presets.iter().find(|p| Some(p.index) == assign.place) {
+                    ui.label(RichText::new(crate::assign::replacing(place, &assign.name)).font(theme::regular(14.0)).color(theme::TEXT));
+                }
+            }
+            ui.horizontal(|ui| {
+                let label = assign.place.map_or_else(|| "Replace".to_owned(), |p| format!("Replace {}", nx_proto::slot_label(p)));
+                let replace = egui::Button::new(RichText::new(label).font(theme::semibold(15.0)).color(theme::BG))
+                    .fill(theme::ACCENT)
+                    .corner_radius(CornerRadius::same(255))
+                    .min_size(vec2(130.0, 40.0));
+                ui.add_enabled(false, replace)
+                    .on_disabled_hover_text("Sending a preset to the pedal comes after the capture of an HX Edit import (capture session step 19).");
+                let cancel = egui::Button::new(RichText::new("Cancel").font(theme::semibold(15.0))).corner_radius(CornerRadius::same(255)).min_size(vec2(100.0, 40.0));
+                if ui.add(cancel).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close || modal.should_close() {
+            self.assigning = None;
+        }
+    }
+
     fn library(&mut self, ui: &mut Ui) {
         let dir = crate::library::default_dir();
         ui.horizontal(|ui| {
@@ -646,6 +712,10 @@ impl EditorApp {
                     action = Some(LibraryAction::Open(entry.path.clone()));
                 }
                 response.context_menu(|ui| {
+                    if ui.button("Assign to a place on the pedal…").clicked() {
+                        action = Some(LibraryAction::Assign(entry.path.clone(), entry.name.clone()));
+                        ui.close();
+                    }
                     if ui.button("Rename…").clicked() {
                         action = Some(LibraryAction::StartRename(entry.path.clone(), entry.name.clone()));
                         ui.close();
@@ -669,6 +739,7 @@ impl EditorApp {
         let shown = |path: &std::path::PathBuf| self.showing_file.as_ref() == Some(path);
         match action {
             Some(LibraryAction::Open(path)) => self.leave(Leave::Open(path)),
+            Some(LibraryAction::Assign(path, name)) => self.start_assign(path, name),
             Some(LibraryAction::StartRename(path, name)) => self.renaming = Some((path, name)),
             Some(LibraryAction::CancelRename) => self.renaming = None,
             Some(LibraryAction::Rename(path, name)) => {
@@ -985,6 +1056,7 @@ enum LibraryAction {
     Rename(std::path::PathBuf, String),
     CancelRename,
     Trash(std::path::PathBuf),
+    Assign(std::path::PathBuf, String),
 }
 
 fn open_in_file_manager(dir: &std::path::Path) {
@@ -1227,6 +1299,7 @@ impl eframe::App for EditorApp {
             self.leaving = Some(Leave::Quit);
         }
         self.leave_modal(&ctx);
+        self.assign_modal(&ctx);
         if self.closing {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -1252,8 +1325,12 @@ impl eframe::App for EditorApp {
                 self.customtone.show(ui);
                 let saved = self.customtone.take_saved();
                 if let Some(last) = saved.last() {
-                    self.status = format!("Downloaded to {}", last.display());
+                    self.status = format!("Downloaded to {}", last.path.display());
                     self.rescan();
+                }
+                if let Some(tone) = saved.into_iter().rfind(|d| d.assign) {
+                    let name = std::fs::read(&tone.path).ok().and_then(|b| Preset::from_slice(&b).ok()).map(|p| p.name().to_owned());
+                    self.start_assign(tone.path, name.unwrap_or_default());
                 }
                 return;
             }
@@ -1418,7 +1495,7 @@ mod pedal_tests {
 
     use super::*;
 
-    fn connection() -> Option<(Connection, FakeDevice)> {
+    pub(super) fn connection() -> Option<(Connection, FakeDevice)> {
         let dir = std::env::var_os("NX_HXEDIT_RES").map(PathBuf::from).unwrap_or_else(nx_catalog::default_res_dir);
         let Ok(syms) = nx_catalog::ModelSymbols::load(&dir.join("Helix.sym")) else {
             eprintln!("skipped: no Helix.sym in {} (set NX_HXEDIT_RES)", dir.display());
@@ -1447,5 +1524,46 @@ mod pedal_tests {
         assert_eq!(app.preset.as_ref().unwrap().name(), "Mark Lead");
         assert_eq!(app.pedal_preset.as_ref().unwrap().name(), "Revv DM");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod assign_tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    use super::*;
+
+    fn editor(connection: Option<Connection>) -> Harness<'static, EditorApp> {
+        let mut connection = connection;
+        let mut harness = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |cc| {
+            theme::install(&cc.egui_ctx);
+            let mut app = EditorApp::new(None, None, String::new(), connection.take());
+            app.start_assign("customtone/BE100 CH1+2.hlx".into(), "BE100 CH1+2".into());
+            app
+        });
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn without_the_pedal_the_dialog_asks_to_connect_it() {
+        let harness = editor(None);
+        harness.get_by_label("Connect the HX Stomp to choose one of its places.");
+        assert!(harness.get_by_label("Replace").accesskit_node().is_disabled());
+    }
+
+    #[test]
+    fn a_chosen_place_says_what_it_replaces_and_cancel_closes() {
+        let Some((mut connection, _device)) = super::pedal_tests::connection() else { return };
+        connection.presets = (0..9).map(|i| nx_proto::PresetEntry { index: i, name: format!("Preset {i}") }).collect();
+        let mut harness = editor(Some(connection));
+        harness.state_mut().assigning.as_mut().unwrap().place = Some(7);
+        harness.run();
+        harness.get_by_label("03B \"Preset 7\" on the HX Stomp is replaced by \"BE100 CH1+2\". The preset now on 03B is gone unless it is in the library.");
+        assert!(harness.get_by_label("Replace 03B").accesskit_node().is_disabled());
+        harness.get_by_label("Cancel").click();
+        harness.run();
+        assert!(harness.state().assigning.is_none());
     }
 }

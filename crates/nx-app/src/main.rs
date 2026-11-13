@@ -1,4 +1,5 @@
 mod account;
+mod assign;
 mod cli;
 mod customtone;
 mod device;
