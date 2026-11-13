@@ -392,3 +392,10 @@ retried.
   (HX Edit's captures never try; `nx-session` holds them).
 - Status values other than 0 and 1.
 - Ops 76, 83 and the remaining fields of op 23.
+- Footswitches stopped switching presets after the second live knob session (2026-11-13,
+  `live-06-knobs`), until the pedal was power-cycled. nx-edit had sent only op 78 and op 30
+  (Drive, cab Distance), all accepted, and closed control and events as HX Edit does. Seen in the
+  same captures, not understood: notification 22 `{118: 19, 119: true}` (global setting 19 became
+  true; in the first session six seconds before nx-edit wrote anything) and notification 23
+  `{23: 0}`, six times while the pedal was being handled. Whether either relates is unknown; a
+  capture of HX Edit doing the same edits, followed by a footswitch check, would tell.
