@@ -3,47 +3,20 @@
 //!
 //! cargo run -p nx-usb --example probe -- <log dir>
 
+mod common;
+
 use std::fs::{self, File};
-use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
+use common::Logged;
 use nx_proto::{Document, Request};
-use nx_session::{Session, Transport};
+use nx_session::Session;
 use nx_usb::UsbTransport;
-
-struct Logged<T> {
-    inner: T,
-    log: File,
-    start: Instant,
-}
-
-impl<T> Logged<T> {
-    fn line(&mut self, dir: &str, data: &[u8]) {
-        let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
-        _ = writeln!(self.log, "{:10.6} {dir} {hex}", self.start.elapsed().as_secs_f64());
-    }
-}
-
-impl<T: Transport> Transport for Logged<T> {
-    fn write(&mut self, transfer: &[u8]) -> io::Result<()> {
-        self.line(">", transfer);
-        self.inner.write(transfer)
-    }
-
-    fn read(&mut self, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
-        let got = self.inner.read(timeout)?;
-        if let Some(data) = &got {
-            self.line("<", data);
-        }
-        Ok(got)
-    }
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "local/live".into()));
     fs::create_dir_all(&dir)?;
-    let transport = Logged { inner: UsbTransport::open()?, log: File::create(dir.join("transfers.log"))?, start: Instant::now() };
+    let transport = Logged::new(UsbTransport::open()?, File::create(dir.join("transfers.log"))?);
     println!("interface claimed, handshake");
 
     let session = Session::connect(transport)?;
