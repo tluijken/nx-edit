@@ -1439,8 +1439,8 @@ mod pedal_tests {
         let mut app = EditorApp::new(None, None, String::new(), Some(connection));
         app.open_file(file.clone());
         app.toggle_block("block0");
-        let capture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../captures/02-select-preset-01C.pcapng");
-        let switched = crate::device::preset_from_capture(&capture).unwrap();
+        let document = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/02-select-preset-01C.doc")).unwrap();
+        let switched = crate::device::DevicePreset { name: "Revv DM".into(), index: Some(2), document };
         app.apply_loaded(Loaded { generation: 1, preset: switched });
         assert_eq!(app.showing_file.as_deref(), Some(file.as_path()));
         assert!(app.unsaved);

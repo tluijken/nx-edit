@@ -4,25 +4,34 @@
 //! `02` is the document right after selecting the preset (snapshot 808). `05` is the same preset
 //! after capture 03 dragged the amp's Drive to 0.6, 04 toggled the delay on and off, and 05 switched
 //! to snapshot Lead. `06` (after a reconnect) is byte-identical to `05`.
+//!
+//! The captures stay out of git; `tests/fixtures/*.doc` are the documents cut from them, and the
+//! tests that read the captures themselves are skipped where `local/captures` is absent.
 
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use nx_capture::{Filter, read_transfers};
 use nx_proto::{Document, ParamValue, RPC_CHANNEL, Reassembler, Request, SlotKind, split_transfer};
 use rmpv::Value;
 
-fn capture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../captures/{name}.pcapng"))
+fn capture(name: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../local/captures/{name}.pcapng"));
+    if path.exists() {
+        Some(path)
+    } else {
+        eprintln!("skipped: no {}", path.display());
+        None
+    }
 }
 
 /// The result bytes of every opcode-22 reply in a capture.
-fn documents(name: &str) -> Vec<Vec<u8>> {
+fn documents(path: &Path) -> Vec<Vec<u8>> {
     let filter = Filter { endpoints: Some(vec![0x01, 0x81]), ..Default::default() };
     let mut reassembler = Reassembler::default();
     let mut asked = Vec::new();
     let mut out = Vec::new();
-    for t in read_transfers(File::open(capture(name)).unwrap(), &filter).unwrap() {
+    for t in read_transfers(File::open(path).unwrap(), &filter).unwrap() {
         for frame in split_transfer(&t.data).unwrap() {
             for msg in reassembler.push(&frame).unwrap() {
                 let value = msg.decode().unwrap();
@@ -41,7 +50,7 @@ fn documents(name: &str) -> Vec<Vec<u8>> {
                     // The document travels as a MessagePack str, not bin, although it is not UTF-8.
                     match field(104) {
                         Some(Value::String(s)) => out.push(s.as_bytes().to_vec()),
-                        other => panic!("{name}: document is not a str: {other:?}"),
+                        other => panic!("{}: document is not a str: {other:?}", path.display()),
                     }
                 }
             }
@@ -51,9 +60,7 @@ fn documents(name: &str) -> Vec<Vec<u8>> {
 }
 
 fn document(name: &str) -> Vec<u8> {
-    let mut docs = documents(name);
-    assert_eq!(docs.len(), 1, "{name}");
-    docs.remove(0)
+    std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.doc"))).unwrap()
 }
 
 fn float(v: &ParamValue) -> f32 {
@@ -68,19 +75,29 @@ fn floats(values: &[ParamValue]) -> Vec<f32> {
 }
 
 #[test]
-fn the_three_captured_documents() {
+fn the_fixtures_are_the_captured_documents() {
+    let (Some(c02), Some(c05), Some(c06)) =
+        (capture("02-select-preset-01C"), capture("05-snapshot-switch"), capture("06-reconnect"))
+    else {
+        return;
+    };
+    assert_eq!(documents(&c02), vec![document("02-select-preset-01C")]);
+    assert_eq!(documents(&c05), vec![document("05-snapshot-switch")]);
+    assert_eq!(documents(&c06), vec![document("05-snapshot-switch")]);
+}
+
+#[test]
+fn the_two_documents() {
     let d02 = document("02-select-preset-01C");
     let d05 = document("05-snapshot-switch");
-    let d06 = document("06-reconnect");
     assert_eq!(d02.len(), 2801);
     assert!(d02.starts_with(b"\xa9l6-helix\0"));
     assert_ne!(d02, d05);
-    assert_eq!(d05, d06);
 }
 
 #[test]
 fn captured_documents_reencode_byte_for_byte() {
-    for name in ["02-select-preset-01C", "05-snapshot-switch", "06-reconnect"] {
+    for name in ["02-select-preset-01C", "05-snapshot-switch"] {
         let bytes = document(name);
         let doc = Document::decode(&bytes).unwrap();
         assert_eq!(doc.encode().unwrap(), bytes, "{name}");

@@ -1,4 +1,4 @@
-//! Every RPC request HX Edit sent in `captures/` must parse into a `Request` and encode back to the
+//! Every RPC request HX Edit sent in `local/captures/` must parse into a `Request` and encode back to the
 //! exact bytes HX Edit wrote.
 
 use std::fs::File;
@@ -7,8 +7,20 @@ use std::path::PathBuf;
 use nx_capture::{Filter, read_transfers};
 use nx_proto::{RPC_CHANNEL, Reassembler, Request, split_transfer};
 
-fn host_rpc_bodies() -> Vec<(String, Vec<u8>)> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../captures");
+/// The captures stay out of git; where `local/captures` is absent the tests that need them pass
+/// without checking anything.
+fn captures_dir() -> Option<PathBuf> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../local/captures");
+    if dir.exists() {
+        Some(dir)
+    } else {
+        eprintln!("skipped: no {}", dir.display());
+        None
+    }
+}
+
+fn host_rpc_bodies() -> Option<Vec<(String, Vec<u8>)>> {
+    let dir = captures_dir()?;
     let filter = Filter { endpoints: Some(vec![0x01]), ..Default::default() };
     let mut out = Vec::new();
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -29,12 +41,12 @@ fn host_rpc_bodies() -> Vec<(String, Vec<u8>)> {
             }
         }
     }
-    out
+    Some(out)
 }
 
 #[test]
 fn captured_requests_encode_byte_for_byte() {
-    let bodies = host_rpc_bodies();
+    let Some(bodies) = host_rpc_bodies() else { return };
     assert!(bodies.len() > 20);
     let mut known = 0;
     for (file, body) in &bodies {

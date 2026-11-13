@@ -1,4 +1,4 @@
-//! Transport frames on the `MI_00` bulk endpoints, as observed in `captures/` (session 1).
+//! Transport frames on the `MI_00` bulk endpoints, as observed in `local/captures/` (session 1).
 //!
 //! ```text
 //! 0  u16 LE  body length (bytes after this 8-byte header)

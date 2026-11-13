@@ -1,4 +1,4 @@
-//! Byte strings below are transfers from `captures/` (session 1), copied verbatim.
+//! Byte strings below are transfers from `local/captures/` (session 1), copied verbatim.
 
 use nx_proto::{Frame, FrameKind, Message, Reassembler, split_transfer};
 

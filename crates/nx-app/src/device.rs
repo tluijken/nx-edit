@@ -262,8 +262,19 @@ mod tests {
     use super::*;
     use crate::layout::lanes;
 
-    fn capture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../captures").join(format!("{name}.pcapng"))
+    fn capture(name: &str) -> Option<PathBuf> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../local/captures").join(format!("{name}.pcapng"));
+        if !path.exists() {
+            eprintln!("skipped: no {}", path.display());
+            return None;
+        }
+        Some(path)
+    }
+
+    /// Revv DM as HX Edit read it from slot 01C in capture 02, or after the edits of capture 05.
+    fn captured(name: &str) -> DevicePreset {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures").join(format!("{name}.doc"));
+        DevicePreset { name: "Revv DM".into(), index: Some(2), document: std::fs::read(path).unwrap() }
     }
 
     fn fixture() -> nx_hlx::Preset {
@@ -282,15 +293,16 @@ mod tests {
 
     #[test]
     fn capture_02_holds_revv_dm() {
-        let captured = preset_from_capture(&capture("02-select-preset-01C")).unwrap();
-        assert_eq!(captured.name, "Revv DM");
-        assert_eq!(captured.document.len(), 2801);
+        let Some(path) = capture("02-select-preset-01C") else { return };
+        let read = preset_from_capture(&path).unwrap();
+        let want = captured("02-select-preset-01C");
+        assert_eq!((read.name, read.index, read.document), (want.name, want.index, want.document));
     }
 
     #[test]
     fn converted_capture_matches_the_imported_hlx() {
         let Some(syms) = helix_sym() else { return };
-        let captured = preset_from_capture(&capture("02-select-preset-01C")).unwrap();
+        let captured = captured("02-select-preset-01C");
         let converted = captured.to_hlx(&syms).unwrap();
         assert_eq!(converted.name(), "Revv DM");
         assert_eq!(converted.snapshot_names(), vec!["808", "33", "Lead"]);
@@ -315,14 +327,14 @@ mod tests {
     #[test]
     fn converted_capture_lays_out_like_the_hlx() {
         let Some(syms) = helix_sym() else { return };
-        let converted = preset_from_capture(&capture("02-select-preset-01C")).unwrap().to_hlx(&syms).unwrap();
+        let converted = captured("02-select-preset-01C").to_hlx(&syms).unwrap();
         assert_eq!(lanes(&converted, None), lanes(&fixture(), None));
     }
 
     #[test]
     fn converted_capture_keeps_the_active_snapshot() {
         let Some(syms) = helix_sym() else { return };
-        let lead = preset_from_capture(&capture("05-snapshot-switch")).unwrap().to_hlx(&syms).unwrap();
+        let lead = captured("05-snapshot-switch").to_hlx(&syms).unwrap();
         assert_eq!(lead.current_snapshot(), 2);
     }
 
@@ -333,7 +345,7 @@ mod tests {
     #[test]
     fn converted_capture_keeps_each_snapshots_block_states() {
         let Some(syms) = helix_sym() else { return };
-        let converted = tone(&preset_from_capture(&capture("02-select-preset-01C")).unwrap().to_hlx(&syms).unwrap());
+        let converted = tone(&captured("02-select-preset-01C").to_hlx(&syms).unwrap());
         let want = tone(&fixture());
         for i in 0..3 {
             let snapshot = format!("snapshot{i}");
@@ -344,7 +356,7 @@ mod tests {
     #[test]
     fn converted_capture_keeps_the_snapshot_controller_and_its_values() {
         let Some(syms) = helix_sym() else { return };
-        let converted = tone(&preset_from_capture(&capture("02-select-preset-01C")).unwrap().to_hlx(&syms).unwrap());
+        let converted = tone(&captured("02-select-preset-01C").to_hlx(&syms).unwrap());
         let want = tone(&fixture());
         assert_eq!(converted["controller"], want["controller"]);
         for i in 0..3 {
@@ -356,7 +368,7 @@ mod tests {
     #[test]
     fn converted_capture_keeps_snapshot_settings() {
         let Some(syms) = helix_sym() else { return };
-        let converted = tone(&preset_from_capture(&capture("02-select-preset-01C")).unwrap().to_hlx(&syms).unwrap());
+        let converted = tone(&captured("02-select-preset-01C").to_hlx(&syms).unwrap());
         let want = tone(&fixture());
         for i in 0..3 {
             for key in ["@name", "@valid", "@custom_name", "@ledcolor", "@tempo"] {
@@ -368,7 +380,7 @@ mod tests {
     #[test]
     fn converted_snapshots_switch_like_the_hlx() {
         let Some(syms) = helix_sym() else { return };
-        let mut converted = preset_from_capture(&capture("02-select-preset-01C")).unwrap().to_hlx(&syms).unwrap();
+        let mut converted = captured("02-select-preset-01C").to_hlx(&syms).unwrap();
         let mut want = fixture();
         converted.select_snapshot(2);
         want.select_snapshot(2);
@@ -430,7 +442,8 @@ mod tests {
 
     #[test]
     fn a_capture_without_a_document_is_an_error() {
-        assert!(preset_from_capture(&capture("01-connect")).is_err());
+        let Some(path) = capture("01-connect") else { return };
+        assert!(preset_from_capture(&path).is_err());
     }
 
     fn fake_stomp(reply: impl Fn(&Request) -> nx_session::fake::Reply + Send + 'static) -> nx_session::fake::FakeDevice {
@@ -482,7 +495,7 @@ mod tests {
     #[test]
     fn blocks_keep_their_address_on_the_pedal() {
         let Some(syms) = helix_sym() else { return };
-        let captured = preset_from_capture(&capture("02-select-preset-01C")).unwrap();
+        let captured = captured("02-select-preset-01C");
         let addresses = captured.addresses(&syms).unwrap();
         let amp = &addresses["block2"];
         assert_eq!((amp.slot, amp.sub), (3, 0));

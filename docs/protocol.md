@@ -1,10 +1,10 @@
 # HX Stomp editor protocol
 
-What nx-edit knows about the protocol on interface `MI_00`, from its own captures (`captures/`,
-session 1: HX Edit 3.82, HX Stomp firmware 3.71.0). tonepush's PROTOCOL.md was used as a map; every
-statement here is checked against our captures. Tags: **[seen]** observed in our captures and
-covered by a test; **[inferred]** consistent with our captures but not proven; **[map]** from
-PROTOCOL.md, not yet seen by us.
+What nx-edit knows about the protocol on interface `MI_00`, from its own captures
+(`local/captures/`, kept out of git; session 1: HX Edit 3.82, HX Stomp firmware 3.71.0).
+tonepush's PROTOCOL.md was used as a map; every statement here is checked against our captures.
+Tags: **[seen]** observed in our captures and covered by a test; **[inferred]** consistent with
+our captures but not proven; **[map]** from PROTOCOL.md, not yet seen by us.
 
 ## Layer 1: transfers and frames [seen]
 
@@ -260,7 +260,7 @@ NUL) of at most 15 bytes [inferred: neither HX Edit's resource files nor the cap
 the limit, and the captures only hold names of up to four characters].
 
 Note: capture 03 ends with Drive **0.6** (`SetParam 119: 0.6`, and the document agrees), not about
-0.55 as `captures/README.md` estimates.
+0.55 as `local/captures/README.md` estimates.
 
 ## Session
 

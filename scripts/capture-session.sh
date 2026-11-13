@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Leads through capture session 2: one HX Edit action per capture. For each step it says what to
-# do, captures usbmon while you do it, and keeps only the pedal's traffic in captures/.
+# do, captures usbmon while you do it, and keeps only the pedal's traffic in local/captures/.
 #
 # Run from the repo root on the host, with HX Edit open in the VM and the pedal passed through:
 #   scripts/capture-session.sh            all steps
@@ -33,7 +33,7 @@ STEPS=(
 )
 
 cd "$(git rev-parse --show-toplevel)"
-mkdir -p captures local/raw
+mkdir -p local/captures local/raw
 log="local/capture-session-2.log"
 start_at="${1:-0}"
 
@@ -67,10 +67,10 @@ for step in "${STEPS[@]}"; do
   pkill -x dumpcap || true
   wait 2>/dev/null || true
 
-  tshark -r "$raw" -Y "usb.device_address == $dev" -w "captures/$label.pcapng" 2>/dev/null
+  tshark -r "$raw" -Y "usb.device_address == $dev" -w "local/captures/$label.pcapng" 2>/dev/null
   read -rp "   Opmerking (wat zag je, mag leeg) " note
   echo "$(date -Is) $label device $dev: $action | $note" >>"$log"
-  echo "   opgeslagen: captures/$label.pcapng"
+  echo "   opgeslagen: local/captures/$label.pcapng"
 done
 
 echo
