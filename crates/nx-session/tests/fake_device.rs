@@ -8,6 +8,13 @@ use nx_session::fake::{FakeDevice, Reply};
 use nx_session::{Channel, Config, Error, Event, Session};
 use rmpv::Value;
 
+/// Every test runs against a device that wedges on a HELLO on an open channel.
+fn strict_device() -> FakeDevice {
+    let device = FakeDevice::new();
+    device.strict(true);
+    device
+}
+
 fn config() -> Config {
     Config {
         ack_delay: Duration::from_millis(5),
@@ -34,7 +41,7 @@ fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
 
 #[test]
 fn connects_in_hx_edit_order() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let _session = Session::connect_with(device.transport(), config()).unwrap();
     let opened: Vec<(u16, u8)> = device.service_opens();
     assert_eq!(opened, vec![(0x1001, 5), (0x1080, 6), (0x1002, 4), (0x1001, 2)]);
@@ -44,7 +51,7 @@ fn connects_in_hx_edit_order() {
 
 #[test]
 fn matches_replies_to_requests_by_transaction() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, req| match req {
         Request::ReadGlobal { id } => Reply::Ok(map(&[(118, (*id).into()), (119, (id * 2).into())])),
         _ => Reply::Ok(Value::Nil),
@@ -60,7 +67,7 @@ fn matches_replies_to_requests_by_transaction() {
 
 #[test]
 fn control_and_rpc_channels_count_transactions_separately() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let session = Session::connect_with(device.transport(), config()).unwrap();
     session.request(Request::PresetInfo).unwrap();
     session.request_on(Channel::Control, Request::Other { opcode: 254, args: Value::Map(vec![]) }).unwrap();
@@ -71,7 +78,7 @@ fn control_and_rpc_channels_count_transactions_separately() {
 
 #[test]
 fn a_reply_that_arrives_out_of_order_still_finds_its_request() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, txn, _| Reply::Ok(Value::from(txn)));
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let a = session.send(Channel::Rpc, Request::PresetInfo);
@@ -82,7 +89,7 @@ fn a_reply_that_arrives_out_of_order_still_finds_its_request() {
 
 #[test]
 fn notifications_are_acknowledged_so_the_device_keeps_sending() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let events = session.events();
     // 300 notifications of about 20 bytes is well past the 4 KB the device sends unacknowledged.
@@ -106,7 +113,7 @@ fn notifications_are_acknowledged_so_the_device_keeps_sending() {
 
 #[test]
 fn a_deferred_operation_completes_on_notification_20() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, req| match req {
         Request::SelectPreset { .. } => Reply::Deferred,
         _ => Reply::Ok(Value::Nil),
@@ -133,7 +140,7 @@ fn a_deferred_operation_completes_on_notification_20() {
 
 #[test]
 fn a_failed_deferred_operation_reports_its_status() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, _| Reply::Deferred);
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let pending = session.send(Channel::Rpc, Request::SelectPreset { setlist: 0, index: 9 });
@@ -147,7 +154,7 @@ fn a_failed_deferred_operation_reports_its_status() {
 
 #[test]
 fn a_deferred_operation_that_never_completes_times_out() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, _| Reply::Deferred);
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let started = Instant::now();
@@ -157,7 +164,7 @@ fn a_deferred_operation_that_never_completes_times_out() {
 
 #[test]
 fn a_timeout_is_reported_and_never_answered_with_a_new_handshake() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, req| match req {
         Request::PresetInfo => Reply::Silent,
         _ => Reply::Ok(Value::from(1)),
@@ -172,7 +179,7 @@ fn a_timeout_is_reported_and_never_answered_with_a_new_handshake() {
 
 #[test]
 fn a_device_that_does_not_answer_hello_fails_connect_once() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.ignore_hello(true);
     let started = Instant::now();
     assert!(matches!(Session::connect_with(device.transport(), config()), Err(Error::Timeout(_))));
@@ -183,7 +190,7 @@ fn a_device_that_does_not_answer_hello_fails_connect_once() {
 #[test]
 fn a_wedged_device_is_reported_not_retried() {
     // PROTOCOL.md (map): a wedged device answers HELLO with bare acknowledgements.
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.wedged(true);
     assert!(matches!(Session::connect_with(device.transport(), config()), Err(Error::Handshake { .. })));
     assert_eq!(device.hellos(), vec![0x1001]);
@@ -191,7 +198,7 @@ fn a_wedged_device_is_reported_not_retried() {
 
 #[test]
 fn a_stale_backlog_is_drained_before_hello() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.backlog(50);
     let _session = Session::connect_with(device.transport(), config()).unwrap();
     assert_eq!(device.backlog_left(), 0);
@@ -199,7 +206,7 @@ fn a_stale_backlog_is_drained_before_hello() {
 
 #[test]
 fn idle_channels_get_keep_alives_with_the_current_acknowledgement() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let cfg = Config { keepalive_interval: Duration::from_millis(40), ..config() };
     let session = Session::connect_with(device.transport(), cfg).unwrap();
     device.notify(30, Value::Nil);
@@ -216,7 +223,7 @@ fn idle_channels_get_keep_alives_with_the_current_acknowledgement() {
 
 #[test]
 fn sequence_numbers_count_every_frame_and_wrap() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, _| Reply::Ok(Value::Nil));
     let session = Session::connect_with(device.transport(), config()).unwrap();
     for _ in 0..300 {
@@ -235,7 +242,7 @@ fn sequence_numbers_count_every_frame_and_wrap() {
 
 #[test]
 fn a_large_request_waits_for_the_devices_window() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, _| Reply::Ok(Value::Nil));
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let blob = Value::Binary(vec![0xab; 3000]);
@@ -247,7 +254,7 @@ fn a_large_request_waits_for_the_devices_window() {
 
 #[test]
 fn the_device_closing_a_channel_fails_its_requests() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, _| Reply::Silent);
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let events = session.events();
@@ -263,7 +270,7 @@ fn the_device_closing_a_channel_fails_its_requests() {
 
 #[test]
 fn close_ends_control_and_events_like_hx_edit() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let session = Session::connect_with(device.transport(), config()).unwrap();
     device.notify(30, Value::Nil);
     thread::sleep(Duration::from_millis(30));
@@ -280,7 +287,7 @@ fn rpc_payload_bytes(device: &FakeDevice) -> usize {
 fn a_reply_timeout_leaves_the_device_state_unknown() {
     // The device accepts the request (status 1) only after the host gave up on it, and then commits;
     // racing that commit can wedge it, so nothing more may go out on any channel.
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, txn, _| {
         if txn == 1000 { Reply::LateDeferred(Duration::from_millis(400)) } else { Reply::Ok(Value::from(txn)) }
     });
@@ -297,7 +304,7 @@ fn a_reply_timeout_leaves_the_device_state_unknown() {
 
 #[test]
 fn a_deferred_timeout_leaves_the_device_state_unknown() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, req| match req {
         Request::SelectPreset { .. } => Reply::Deferred,
         _ => Reply::Ok(Value::Nil),
@@ -310,7 +317,7 @@ fn a_deferred_timeout_leaves_the_device_state_unknown() {
 
 #[test]
 fn the_unsent_rest_of_a_timed_out_request_is_dropped() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let session = Session::connect_with(device.transport(), config()).unwrap();
     device.withhold_acks(true);
     let blob = Value::Binary(vec![0xab; 3000]);
@@ -323,7 +330,7 @@ fn the_unsent_rest_of_a_timed_out_request_is_dropped() {
 
 #[test]
 fn a_handshake_that_fails_after_opening_channels_closes_them_like_hx_edit() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.refuse_service(2);
     assert!(matches!(Session::connect_with(device.transport(), config()), Err(Error::Timeout(_))));
     // The probe's close, then control and events as HX Edit quits; 0x1080 stays open.
@@ -333,7 +340,7 @@ fn a_handshake_that_fails_after_opening_channels_closes_them_like_hx_edit() {
 
 #[test]
 fn dropping_a_session_closes_like_hx_edit() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let session = Session::connect_with(device.transport(), config()).unwrap();
     device.notify(30, Value::Nil);
     thread::sleep(Duration::from_millis(30));
@@ -344,7 +351,7 @@ fn dropping_a_session_closes_like_hx_edit() {
 
 #[test]
 fn close_waits_for_a_running_deferred_operation() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, _| Reply::Deferred);
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let pending = session.send(Channel::Rpc, Request::SelectPreset { setlist: 0, index: 2 });
@@ -361,7 +368,7 @@ fn close_waits_for_a_running_deferred_operation() {
 
 #[test]
 fn close_waits_for_a_deferred_operation_no_longer_than_its_timeout() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, _| Reply::Deferred);
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let pending = session.send(Channel::Rpc, Request::SelectPreset { setlist: 0, index: 2 });
@@ -375,7 +382,7 @@ fn close_waits_for_a_deferred_operation_no_longer_than_its_timeout() {
 
 #[test]
 fn close_still_ends_events_when_control_does_not_answer() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let session = Session::connect_with(device.transport(), config()).unwrap();
     device.ignore_close(Channel::Control);
     assert!(matches!(session.close(), Err(Error::Timeout(_))));
@@ -384,7 +391,7 @@ fn close_still_ends_events_when_control_does_not_answer() {
 
 #[test]
 fn notification_20_before_its_status_1_reply_still_completes_the_request() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     device.on_request(|_, _, _| Reply::DoneBeforeReply(Value::from("done")));
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let started = Instant::now();
@@ -395,7 +402,7 @@ fn notification_20_before_its_status_1_reply_still_completes_the_request() {
 
 #[test]
 fn an_absurd_message_length_leaves_the_device_state_unknown() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let session = Session::connect_with(device.transport(), config()).unwrap();
     // A message header announcing 2 GB.
     device.send_payload(Channel::Rpc, &[0, 0, 6, 0, 0xff, 0xff, 0xff, 0x7f]);
@@ -406,7 +413,7 @@ fn an_absurd_message_length_leaves_the_device_state_unknown() {
 
 #[test]
 fn a_transfer_that_does_not_split_is_used_up_to_the_break_and_leaves_the_state_unknown() {
-    let device = FakeDevice::new();
+    let device = strict_device();
     let session = Session::connect_with(device.transport(), config()).unwrap();
     let events = session.events();
     // A frame header announcing 255 body bytes that never come.
@@ -415,4 +422,47 @@ fn a_transfer_that_does_not_split_is_used_up_to_the_break_and_leaves_the_state_u
     assert!(matches!(events.recv_timeout(Duration::from_secs(1)), Ok(Event::Notification { id: 30, .. })));
     assert!(matches!(session.request(Request::PresetInfo), Err(Error::Poisoned(_))));
     assert!(device.requests().is_empty());
+}
+
+#[test]
+fn a_strict_device_wedges_on_a_hello_on_an_open_channel() {
+    let device = strict_device();
+    device.on_request(|_, _, _| Reply::Ok(Value::Nil));
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    session.request(Request::PresetInfo).unwrap();
+    // A second client saying HELLO on 0x1080 while this session holds it.
+    let hello = nx_proto::Frame::hello(0x1080, 0x03ed, &[0, 0, 0, 2, 0, 1, 0, 0x21, 0, 0x10, 0, 0]);
+    nx_session::Transport::write(&mut device.transport(), &hello.encode()).unwrap();
+    assert!(device.is_wedged());
+    assert!(matches!(session.request(Request::PresetInfo), Err(Error::Timeout(_))));
+}
+
+#[test]
+fn a_whole_session_never_says_hello_on_an_open_channel() {
+    let device = strict_device();
+    device.on_request(|_, _, req| match req {
+        Request::SelectPreset { .. } => Reply::Deferred,
+        _ => Reply::Ok(Value::Nil),
+    });
+    let session = Session::connect_with(device.transport(), config()).unwrap();
+    session.request(Request::PresetInfo).unwrap();
+    session.request_on(Channel::Control, Request::PresetInfo).unwrap();
+    let pending = session.send(Channel::Rpc, Request::SelectPreset { setlist: 0, index: 1 });
+    wait_for("the select", || device.requests().len() == 3);
+    device.complete_deferred(1001, 0, Value::Nil);
+    pending.wait().unwrap();
+    device.close_channel(Channel::Rpc);
+    assert!(matches!(session.request(Request::PresetInfo), Err(Error::ChannelClosed(_))));
+    session.close().unwrap();
+    assert!(!device.is_wedged());
+    assert_eq!(device.hellos(), vec![0x1001, 0x1080, 0x1002, 0x1001]);
+}
+
+#[test]
+fn a_failed_handshake_never_says_hello_on_an_open_channel() {
+    let device = strict_device();
+    device.refuse_service(4);
+    assert!(Session::connect_with(device.transport(), config()).is_err());
+    assert!(!device.is_wedged());
+    assert_eq!(device.hellos(), vec![0x1001, 0x1080, 0x1002]);
 }

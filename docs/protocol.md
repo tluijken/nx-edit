@@ -315,7 +315,9 @@ exits without closing leaves a backlog], reports any timeout or a non-HELLO answ
 error, and never repeats the handshake or sends HELLO on a channel that is open [map: a second
 HELLO on an open channel can wedge the device until its power is pulled]. Note that HX Edit itself
 sent HELLO on `0x1080` in `06` although the previous session never closed it, and the device
-accepted; a fresh session after a quit is not what the map warns about.
+accepted; a fresh session after a quit is not what the map warns about. The fake device
+(`nx_session::fake`) can play the hostile case (`FakeDevice::strict`: a HELLO on an open channel
+wedges it), and the session tests run against it.
 
 ### Requests and deferred operations
 

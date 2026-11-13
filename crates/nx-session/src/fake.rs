@@ -70,6 +70,7 @@ struct State {
     refused_services: Vec<u8>,
     ignored_closes: Vec<Channel>,
     append_next: Option<Vec<u8>>,
+    strict: bool,
 }
 
 struct Shared {
@@ -124,6 +125,7 @@ impl FakeDevice {
             refused_services: Vec::new(),
             ignored_closes: Vec::new(),
             append_next: None,
+            strict: false,
         };
         Self(Arc::new(Shared { state: Mutex::new(state), wake: Condvar::new() }))
     }
@@ -174,6 +176,18 @@ impl FakeDevice {
     /// Leaves the host's close of `channel` unanswered (it is still recorded).
     pub fn ignore_close(&self, channel: Channel) {
         self.lock().ignored_closes.push(channel);
+    }
+
+    /// Behaves like the device the map warns about: a HELLO on a channel that is open wedges it
+    /// until it is power-cycled (every later HELLO gets a bare acknowledgement and nothing else is
+    /// answered). The captured device accepted a HELLO on `0x1080` from a new client after the last
+    /// one quit; this is the hostile case.
+    pub fn strict(&self, on: bool) {
+        self.lock().strict = on;
+    }
+
+    pub fn is_wedged(&self) -> bool {
+        self.lock().wedged
     }
 
     /// Answers HELLO with a bare acknowledgement, like a device left wedged by an earlier client.
@@ -324,6 +338,9 @@ impl State {
                 if self.ignore_hello {
                     return;
                 }
+                if self.strict && self.links[i].open {
+                    self.wedged = true;
+                }
                 if self.wedged {
                     let f = Frame::channel(channel.device_id(), channel.host_id(), 0x86, FrameKind::Ack, 0x265, &[]);
                     self.out.push_back((f.encode(), false));
@@ -333,6 +350,7 @@ impl State {
                 let f = Frame::hello(channel.device_id(), channel.host_id(), &DEVICE_HELLO);
                 self.out.push_back((f.encode(), false));
             }
+            _ if self.wedged => {}
             Some(FrameKind::Close) => {
                 self.closes.push(frame.src);
                 if self.ignored_closes.contains(&channel) {

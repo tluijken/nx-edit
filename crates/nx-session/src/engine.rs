@@ -636,9 +636,13 @@ mod tests {
     #[test]
     fn no_hello_on_an_open_channel() {
         let device = FakeDevice::new();
+        device.strict(true);
         let mut engine = Engine::new(device.transport(), config());
         engine.handshake().unwrap();
-        assert!(matches!(engine.send_hello(Channel::Rpc), Err(Error::AlreadyOpen(Channel::Rpc))));
+        for channel in Channel::ALL {
+            assert!(matches!(engine.send_hello(channel), Err(Error::AlreadyOpen(c)) if c == channel));
+        }
         assert_eq!(device.hellos().len(), 4);
+        assert!(!device.is_wedged());
     }
 }
