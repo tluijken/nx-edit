@@ -26,6 +26,12 @@ const KNOB_CARD: egui::Vec2 = vec2(116.0, 140.0);
 pub struct Connection {
     pub live: Live,
     pub addresses: HashMap<String, BlockAddress>,
+    /// The pedal's presets, read once on connecting.
+    pub presets: Vec<nx_proto::PresetEntry>,
+    /// The place of the preset shown, as the pedal last reported it.
+    pub current: Option<u64>,
+    /// Model names, to show a preset read after a switch.
+    pub syms: nx_catalog::ModelSymbols,
 }
 
 /// A knob being dragged: its block and parameter, the value it started at, and the pixels moved up.
@@ -38,6 +44,7 @@ struct Drag {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Panel {
+    Presets,
     Snapshots,
     Models,
 }
@@ -57,6 +64,7 @@ pub struct EditorApp {
 impl EditorApp {
     pub fn new(preset: Option<Preset>, catalog: Option<Catalog>, status: String, connection: Option<Connection>) -> Self {
         let selected_block = preset.as_ref().and_then(|p| p.blocks().first().map(|b| b.key.clone()));
+        let panel = if connection.is_some() { Panel::Presets } else { Panel::Snapshots };
         Self {
             preset,
             catalog,
@@ -65,7 +73,7 @@ impl EditorApp {
             status,
             connection,
             drag: None,
-            panel: Panel::Snapshots,
+            panel,
             search: String::new(),
         }
     }
@@ -297,13 +305,68 @@ impl EditorApp {
 
     fn side_card(&mut self, ui: &mut Ui) {
         card(ui, |ui| {
-            segmented(ui, &mut self.panel, &[(Panel::Snapshots, "Snapshots"), (Panel::Models, "Models")]);
+            let mut tabs = vec![(Panel::Snapshots, "Snapshots"), (Panel::Models, "Models")];
+            if self.connection.is_some() {
+                tabs.insert(0, (Panel::Presets, "Presets"));
+            }
+            segmented(ui, &mut self.panel, &tabs);
             ui.add_space(12.0);
             match self.panel {
+                Panel::Presets => self.presets(ui),
                 Panel::Snapshots => self.snapshots(ui),
                 Panel::Models => self.models(ui),
             }
         });
+    }
+
+    fn presets(&mut self, ui: &mut Ui) {
+        let Some(connection) = &self.connection else { return };
+        let mut pick = None;
+        egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+            for entry in &connection.presets {
+                let current = connection.current == Some(entry.index);
+                let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+                let painter = ui.painter();
+                if current {
+                    painter.rect_filled(rect, CornerRadius::same(10), theme::RAISED_HI);
+                    painter.rect_stroke(rect, CornerRadius::same(10), Stroke::new(2.0, theme::ACCENT), StrokeKind::Inside);
+                } else if response.hovered() {
+                    painter.rect_filled(rect, CornerRadius::same(10), theme::RAISED);
+                }
+                let label_color = if current { theme::ACCENT } else { theme::TEXT_DIM };
+                painter.text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, nx_proto::slot_label(entry.index), mono(13.0), label_color);
+                let font = if current { theme::semibold(14.0) } else { theme::regular(14.0) };
+                painter.text(rect.left_center() + vec2(60.0, 0.0), Align2::LEFT_CENTER, &entry.name, font, if current { theme::TEXT } else { theme::TEXT_MID });
+                if response.clicked() && !current {
+                    pick = Some(entry.index);
+                }
+            }
+        });
+        if let (Some(index), Some(connection)) = (pick, &self.connection) {
+            connection.live.select(0, index);
+            self.status = format!("Switching to {}…", nx_proto::slot_label(index));
+        }
+    }
+
+    /// Shows a preset the pedal switched to, by a click here or a footswitch.
+    fn take_loaded(&mut self) {
+        let Some(connection) = self.connection.as_mut() else { return };
+        let Some(loaded) = connection.live.loaded() else { return };
+        let shown = loaded.to_hlx(&connection.syms).and_then(|hlx| Ok((hlx, loaded.addresses(&connection.syms)?)));
+        match shown {
+            Ok((hlx, addresses)) => {
+                connection.addresses = addresses;
+                connection.current = loaded.index;
+                if let Some(entry) = connection.presets.iter_mut().find(|p| Some(p.index) == loaded.index) {
+                    entry.name = loaded.name.clone();
+                }
+                self.selected_block = hlx.blocks().first().map(|b| b.key.clone());
+                self.preset = Some(hlx);
+                self.drag = None;
+                self.status = "Connected · changes not saved".to_owned();
+            }
+            Err(e) => self.status = format!("HX Stomp: {e}"),
+        }
     }
 
     fn snapshots(&self, ui: &mut Ui) {
@@ -581,6 +644,7 @@ fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, c
 
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.take_loaded();
         if let Some(connection) = &self.connection {
             if let Some(error) = connection.live.errors().pop() {
                 self.status = format!("HX Stomp: {error}");

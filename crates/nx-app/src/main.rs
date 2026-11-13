@@ -37,19 +37,22 @@ fn main() -> eframe::Result {
     let mut connection = None;
     let from_pedal = source.as_ref().and_then(|source| {
         let loaded = nx_catalog::ModelSymbols::load(&res_dir.join("Helix.sym")).map_err(|e| e.to_string()).and_then(|syms| {
-            let (preset, session) = match source {
+            let (preset, link) = match source {
                 Source::Capture(path) => (device::preset_from_capture(path)?, None),
                 Source::Device => {
-                    let (session, preset) = device::connect_device()?;
-                    (preset, Some(session))
+                    let (session, presets, preset) = device::connect_device()?;
+                    (preset, Some((session, presets)))
                 }
             };
             let hlx = preset.to_hlx(&syms)?;
-            let link = match session {
-                Some(session) => {
-                    let addresses = preset.addresses(&syms)?;
-                    Some(view::Connection { live: live::Live::start(session), addresses })
-                }
+            let link = match link {
+                Some((session, presets)) => Some(view::Connection {
+                    addresses: preset.addresses(&syms)?,
+                    live: live::Live::start(session),
+                    presets,
+                    current: preset.index,
+                    syms,
+                }),
                 None => None,
             };
             Ok((hlx, link))

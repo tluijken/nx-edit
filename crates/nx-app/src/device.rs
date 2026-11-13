@@ -14,6 +14,8 @@ use serde_json::{Map, json};
 #[derive(Debug)]
 pub struct DevicePreset {
     pub name: String,
+    /// The preset's place on the pedal (key 108 of op 23), 0 for 01A.
+    pub index: Option<u64>,
     pub document: Vec<u8>,
 }
 
@@ -29,13 +31,23 @@ pub fn preset_from_capture(path: &Path) -> Result<DevicePreset, String> {
     preset_from_frames(frames)?.ok_or_else(|| format!("{}: no preset document in this capture", path.display()))
 }
 
-/// Connects to the HX Stomp and reads the preset it has selected; the session stays open for
-/// editing and closes when dropped.
-pub fn connect_device() -> Result<(nx_session::Session, DevicePreset), String> {
+/// Connects to the HX Stomp and reads its preset list and the preset it has selected; the session
+/// stays open for editing and closes when dropped.
+pub fn connect_device() -> Result<(nx_session::Session, Vec<nx_proto::PresetEntry>, DevicePreset), String> {
     let transport = nx_usb::UsbTransport::open().map_err(|e| format!("HX Stomp: {e}"))?;
     let session = nx_session::Session::connect(transport).map_err(|e| format!("HX Stomp: {e}"))?;
+    let presets = preset_list(&session)?;
     let preset = preset_from_session(&session)?;
-    Ok((session, preset))
+    Ok((session, presets, preset))
+}
+
+/// The presets of the pedal's setlist, read as HX Edit reads them after connecting [seen, 06].
+pub fn preset_list(session: &nx_session::Session) -> Result<Vec<nx_proto::PresetEntry>, String> {
+    use nx_session::Channel::Control;
+    session.request_on(Control, Request::ControlStart).map_err(|e| format!("preset list: {e}"))?;
+    session.request_on(Control, Request::ListSetlists).map_err(|e| format!("setlists: {e}"))?;
+    let list = session.request_on(Control, Request::ListPresets { setlist: 0 }).map_err(|e| format!("preset list: {e}"))?;
+    nx_proto::parse_preset_list(&list).map_err(|e| e.to_string())
 }
 
 /// Reads only: preset info (op 23), then the document (op 22), as HX Edit does after a switch.
@@ -47,7 +59,11 @@ pub fn preset_from_session(session: &nx_session::Session) -> Result<DevicePreset
         Value::Binary(b) => b,
         other => return Err(format!("preset document: unexpected reply {other}")),
     };
-    Ok(DevicePreset { name: preset_name(&info).unwrap_or_default(), document })
+    Ok(DevicePreset { name: preset_name(&info).unwrap_or_default(), index: info_field(&info, 108).and_then(Value::as_u64), document })
+}
+
+fn info_field(info: &Value, key: u64) -> Option<&Value> {
+    info.as_map()?.iter().find(|(k, _)| k.as_u64() == Some(key)).map(|(_, v)| v)
 }
 
 fn preset_name(info: &Value) -> Option<String> {
@@ -61,7 +77,7 @@ fn preset_name(info: &Value) -> Option<String> {
 fn preset_from_frames(frames: impl IntoIterator<Item = Frame>) -> Result<Option<DevicePreset>, String> {
     let mut reassembler = Reassembler::default();
     let mut asked: Vec<(u64, u64)> = Vec::new();
-    let (mut name, mut document) = (None, None);
+    let (mut name, mut index, mut document) = (None, None, None);
     for frame in frames {
         for msg in reassembler.push(&frame).map_err(|e| e.to_string())? {
             let Ok(value) = msg.decode() else { continue };
@@ -82,12 +98,15 @@ fn preset_from_frames(frames: impl IntoIterator<Item = Frame>) -> Result<Option<
             match (opcode, field(104)) {
                 // The document travels as a MessagePack str, not bin, although it is not UTF-8.
                 (22, Some(Value::String(s))) => document = Some(s.as_bytes().to_vec()),
-                (23, Some(info)) => name = preset_name(info).or(name),
+                (23, Some(info)) => {
+                    name = preset_name(info).or(name);
+                    index = info_field(info, 108).and_then(Value::as_u64).or(index);
+                }
                 _ => {}
             }
         }
     }
-    Ok(document.map(|document| DevicePreset { name: name.unwrap_or_default(), document }))
+    Ok(document.map(|document| DevicePreset { name: name.unwrap_or_default(), index, document }))
 }
 
 /// Where an `.hlx` block lives on the pedal: what op 78 and op 30 call slot (key 98) and key 26,
@@ -381,5 +400,29 @@ mod tests {
         for block in hlx.blocks() {
             assert!(addresses.contains_key(&block.key), "{} has no address", block.key);
         }
+    }
+
+    #[test]
+    fn the_preset_list_is_read_on_the_control_channel_as_hx_edit_reads_it() {
+        use nx_session::Channel;
+        use nx_session::fake::{FakeDevice, Reply};
+        let device = FakeDevice::new();
+        device.strict(true);
+        device.on_request(|_, _, req| match req {
+            Request::ListSetlists => Reply::Ok(Value::Array(vec![Value::Map(vec![(0.into(), "PRESETS\0".into())])])),
+            Request::ListPresets { setlist: 0 } => Reply::Ok(Value::Array(
+                ["Recto DM", "5150 DM"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| Value::Map(vec![(i.into(), Value::Map(vec![(109.into(), format!("{n}\0").into())]))]))
+                    .collect(),
+            )),
+            _ => Reply::Ok(Value::Nil),
+        });
+        let session = nx_session::Session::connect(device.transport()).unwrap();
+        let list = preset_list(&session).unwrap();
+        assert_eq!(list.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Recto DM", "5150 DM"]);
+        let asked: Vec<(Channel, u64)> = device.requests().iter().map(|(c, _, r)| (*c, r.opcode())).collect();
+        assert_eq!(asked, [(Channel::Control, 254), (Channel::Control, 0), (Channel::Control, 1)]);
     }
 }

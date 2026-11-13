@@ -4,6 +4,7 @@
 mod document;
 mod frame;
 mod message;
+mod presets;
 mod rpc;
 
 pub use document::{
@@ -12,6 +13,7 @@ pub use document::{
 };
 pub use frame::{FORMAT_CHANNEL, FORMAT_HELLO, Frame, FrameKind, split_leading, split_transfer};
 pub use message::{Message, Reassembler};
+pub use presets::{PresetEntry, parse_preset_list, slot_label};
 pub use rpc::{RPC_CHANNEL, Request};
 
 #[derive(Debug, thiserror::Error)]

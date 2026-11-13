@@ -21,6 +21,14 @@ pub enum Request {
     SetBlockEnabled { block: u64, enabled: bool },
     SelectBlock { block: u64, path: u64 },
     SelectSnapshot { index: u64 },
+    /// Control channel, `{}`; HX Edit sends it before listing and the device answers nil. Its
+    /// meaning is unknown.
+    ControlStart,
+    /// Control channel: the setlists, `[{index: name}]` (one, "PRESETS", on an HX Stomp).
+    ListSetlists,
+    /// Control channel: the presets of a setlist, `[{index: {109: name, 123, 124, 125}}]`. The
+    /// `101: 2` inside the arguments is copied from HX Edit; its meaning is unknown.
+    ListPresets { setlist: u64 },
     /// An opcode nx-edit does not model yet, kept verbatim.
     Other { opcode: u64, args: Value },
 }
@@ -48,6 +56,9 @@ impl Request {
             Self::SetBlockEnabled { .. } => 41,
             Self::SelectBlock { .. } => 78,
             Self::SelectSnapshot { .. } => 88,
+            Self::ControlStart => 254,
+            Self::ListSetlists => 0,
+            Self::ListPresets { .. } => 1,
             Self::Other { opcode, .. } => *opcode,
         }
     }
@@ -68,6 +79,9 @@ impl Request {
             Self::SetBlockEnabled { block, enabled } => map(vec![(98, int(*block)), (59, Value::Boolean(*enabled))]),
             Self::SelectBlock { block, path } => map(vec![(98, int(*block)), (26, int(*path))]),
             Self::SelectSnapshot { index } => map(vec![(92, int(*index))]),
+            Self::ControlStart => map(Vec::new()),
+            Self::ListSetlists => Value::Nil,
+            Self::ListPresets { setlist } => map(vec![(107, int(*setlist)), (101, int(2))]),
             Self::Other { args, .. } => args.clone(),
         }
     }
@@ -99,6 +113,9 @@ impl Request {
             41 => Some(Self::SetBlockEnabled { block: u(98)?, enabled: get(a, 59)?.as_bool()? }),
             78 => Some(Self::SelectBlock { block: u(98)?, path: u(26)? }),
             88 => Some(Self::SelectSnapshot { index: u(92)? }),
+            254 => Some(Self::ControlStart),
+            0 if args.is_nil() => Some(Self::ListSetlists),
+            1 => Some(Self::ListPresets { setlist: u(107)? }),
             _ => None,
         }
         // A known opcode whose arguments differ from the shape above is kept verbatim, so it still
