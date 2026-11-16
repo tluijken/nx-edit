@@ -11,6 +11,9 @@ use nx_proto::{Document, Frame, ParamValue, RPC_CHANNEL, Reassembler, Request, S
 use rmpv::Value;
 use serde_json::{Map, json};
 
+/// Where HX Edit exports the join of an unused path B: after the last of path A's eight positions.
+const JOIN_AT_PATH_END: i64 = 8;
+
 #[derive(Debug)]
 pub struct DevicePreset {
     pub name: String,
@@ -183,10 +186,16 @@ impl DevicePreset {
                     SlotKind::Join(j) => ("join", j),
                     _ => continue,
                 };
-                // The document stores the path-0 slot a junction precedes; slot 0 is the input.
+                // The document stores the path-0 slot a junction precedes; slot 0 is the input, so 0
+                // means a path B nothing was placed on, which HX Edit exports at both ends of path A.
+                let position = match (key, junction.before_slot) {
+                    ("split", 0) => 0,
+                    ("join", 0) => JOIN_AT_PATH_END,
+                    (_, slot) => slot - 1,
+                };
                 dsp0.insert(
                     key.into(),
-                    json!({"@model": symbol(junction.model)?, "@position": junction.before_slot - 1, "@enabled": junction.enabled}),
+                    json!({"@model": symbol(junction.model)?, "@position": position, "@enabled": junction.enabled}),
                 );
             }
         }
@@ -248,7 +257,9 @@ impl DevicePreset {
 
 fn param_json(value: &ParamValue) -> serde_json::Value {
     match value {
-        ParamValue::Float(f) => json!(f64::from(*f)),
+        // Widening would write 0.26 as 0.25999999046325684. HX Edit's exports round to six significant
+        // digits, as printf's %g does: the pedal's 0.68000007 is exported as 0.680.
+        ParamValue::Float(f) => format!("{:.5e}", f).parse::<f64>().map_or(serde_json::Value::Null, |v| json!(v)),
         ParamValue::Int(i) => json!(i),
         ParamValue::Bool(b) => json!(b),
         ParamValue::Other(_) => serde_json::Value::Null,
@@ -514,5 +525,36 @@ mod tests {
         assert_eq!(list.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Recto DM", "5150 DM"]);
         let asked: Vec<(Channel, u64)> = device.requests().iter().map(|(c, _, r)| (*c, r.opcode())).collect();
         assert_eq!(asked, [(Channel::Control, 254), (Channel::Control, 0), (Channel::Control, 1)]);
+    }
+
+    #[test]
+    fn floats_are_rounded_to_six_significant_digits_as_hx_edit_writes_them() {
+        assert_eq!(param_json(&ParamValue::Float(0.26)), json!(0.26));
+        assert_eq!(param_json(&ParamValue::Float(19.9)), json!(19.9));
+        assert_eq!(param_json(&ParamValue::Float(0.68000007)), json!(0.68));
+        assert_eq!(param_json(&ParamValue::Float(20100.0)), json!(20100.0));
+        assert_eq!(param_json(&ParamValue::Float(-0.1)), json!(-0.1));
+    }
+
+    /// 03A "NX Test" as HX Edit read it for the export in capture 18: an amp and a cab on path A,
+    /// nothing on path B.
+    fn nx_test() -> DevicePreset {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/18-export-preset.doc");
+        DevicePreset { name: "NX Test".into(), index: Some(6), document: std::fs::read(path).unwrap() }
+    }
+
+    #[test]
+    fn junctions_of_an_unused_path_b_sit_where_hx_edit_exports_them() {
+        let Some(syms) = helix_sym() else { return };
+        let converted = tone(&nx_test().to_hlx(&syms).unwrap());
+        assert_eq!(converted["dsp0"]["split"]["@position"], json!(0));
+        assert_eq!(converted["dsp0"]["join"]["@position"], json!(8));
+    }
+
+    #[test]
+    fn converted_export_holds_hx_edits_values() {
+        let Some(syms) = helix_sym() else { return };
+        let amp = &tone(&nx_test().to_hlx(&syms).unwrap())["dsp0"]["block0"];
+        assert_eq!((amp["Drive"].clone(), amp["Bass"].clone()), (json!(0.68), json!(0.26)));
     }
 }

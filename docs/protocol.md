@@ -352,13 +352,16 @@ states], 4: name, 14: custom name, 5: tempo, 12: LED colour}`:
 
 `18-export-preset.hlx` is HX Edit's export of 03A (Cali Rectifire, 4x12 Cali V30 cab, no path B),
 and the document HX Edit read for it (op 4) is in the same capture. Converted with
-`DevicePreset::to_hlx`, every key nx-edit writes is also in the export, with the same value, except:
+`DevicePreset::to_hlx`, every key nx-edit writes is also in the export, with the same value. Two
+differences were found and fixed (the fixture is `nx-proto/tests/fixtures/18-export-preset.doc`):
 
-- **Floats.** nx-edit writes the f32 widened to f64 (`0.25999999046325684`), HX Edit the f32's
-  shortest decimal (`0.260`; it pads to at least two decimals).
-- **Junctions without a path B.** Split and join both hold `before_slot: 0`; nx-edit writes
-  `@position: -1`, HX Edit split 0 and join 8. With a real split (Revv DM: 7 and 9) both write
-  `before_slot - 1`. So 0 means "not placed" [inferred], and the join's default is the end of path 0.
+- **Floats.** HX Edit rounds to six significant digits, as printf's `%g` does: the pedal's f32
+  `0.68000007` is exported as `0.680`, `19.899999` as `19.90` (it pads trailing zeros, which JSON
+  readers ignore). nx-edit had written the f32 widened to f64 (`0.6800000667572021`).
+- **Junctions without a path B.** Split and join both hold `before_slot: 0`; HX Edit exports split
+  0 and join 8, where nx-edit had written `before_slot - 1 = -1`. With a real split (Revv DM: 7 and
+  9) both write `before_slot - 1`. So 0 means "not placed" [inferred], and the join's default is
+  after path A's last position.
 
 What the export has and nx-edit does not write yet (72 of the export's 132 values):
 
