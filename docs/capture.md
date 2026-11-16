@@ -84,6 +84,7 @@ What each capture settles is in [protocol.md](protocol.md).
 | `25-rename-snapshot` | snapshot 1 to "TestShot", via right-click on the snapshot at the top | op 89 |
 | `26-amp-second-knob` | Cali Rectifire Bass 2.6 to 2.8 | op 30 with `28: 1` |
 | `27-snapshot-led-colour` | snapshot colour Red, then Violet | op 98, colours 2 and 9 |
+| `28-snapshot-copy-paste` | copy TestShot, select snapshot 2, paste | ops 90, 88, 91 |
 
 Renaming in HX Edit: a right-click on a preset in the list (or Ctrl+R) renames the preset, also
 when a snapshot was meant (`15`, and a first try at `25` kept as
@@ -96,5 +97,5 @@ Not captured:
   Del does nothing in the list). `local/raw/21-clear-03C-not-available.pcapng` has the attempt.
 - **Tuner Reference** (planned for 22) is not in HX Edit; EXP/FS Tip took its place.
 
-Left for a next session: comparing nx-edit's conversion of `18`'s document with
-`18-export-preset.hlx`, field by field (no pedal needed); snapshot copy and paste.
+nx-edit's conversion of `18`'s document is compared with `18-export-preset.hlx` field by field in
+[protocol.md](protocol.md), "Compared with HX Edit's export".

@@ -106,7 +106,13 @@ completes later with notification 20 `{102: txn, 103: status, 104: result}` [see
 | 85 | read all global settings | `{}` | one MessagePack blob of `{id: value}` maps | 23 |
 | 88 | select snapshot | `92` index | status 0 | 05 |
 | 89 | rename snapshot | `92` index, `109` name (NUL-terminated) | status 0, nil; notification 43 | 25 |
+| 90 | copy the current snapshot (on the pedal) | `{}` | status 0, nil; notification 44 `{92: 0, 93: 0}` | 28 |
+| 91 | paste into the current snapshot | `{}` | status 0, nil; notification 44 `{92: 1, 93: 1}`, then 42, 23, 46 as for a switch | 28 |
 | 98 | set snapshot LED colour | `92` index, `66` colour | status 0, nil; notification 48 | 27 |
+
+Copying a snapshot to another (`28`) happens on the pedal: op 90 copies the current snapshot, HX
+Edit selects the target with op 88, and op 91 pastes into it. The target takes the source's name as
+well; the document read afterwards has "TestShot" twice [seen].
 
 Moving a block (`11`) has no op of its own: HX Edit edits the document and writes the whole of it
 back with op 21 [seen]. Status 1 arrives while the 2.4 KB document is still being sent; notification
@@ -191,6 +197,7 @@ Notifications need ACK frames or the device stops sending them [map].
 | 39 | `{98: slot, 26: sub}` | a block was selected, by op 78 or on the pedal, or after a model change | 04, live-05, 09 |
 | 42 | `{92: index}` | a snapshot switch began | 05 |
 | 43 | `{92: index, 109: name}` | a snapshot was renamed (op 89) | 25 |
+| 44 | `{92, 93}` | a snapshot was copied (op 90: `0, 0`) or pasted (op 91: `1, 1`, the target being snapshot 1); what 92 and 93 each mean is not settled | 28 |
 | 48 | `{92: index, 66: colour}` | a snapshot's LED colour was set (op 98) | 27 |
 | 46 | `{92: index}` | a snapshot finished loading; HX Edit then reads op 23 and op 22 | 05 |
 | 49 | subtype 17 `{98, 59: enabled}`, 10 `{98}`, 47 nil, 14 `{98}`, 11 `{56: 0, 64: 257}` | a block was switched on or off (17), a model was set by insert or change (10, after 47 on a change), a block was removed (14); 11 during a preset load, not understood | 04, live-05, 07-10, 14 |
@@ -340,6 +347,40 @@ states], 4: name, 14: custom name, 5: tempo, 12: LED colour}`:
   entries hold the snapshot's value for that assignment: 808 and 33 `Level 3, MidFreq 400, MidGain −1`,
   Lead `5, 800, 2`, as in the hlx. `flag` is false (hlx `@fs_enabled` is false) [inferred];
 - **1** is not understood.
+
+### Compared with HX Edit's export [seen, `18`]
+
+`18-export-preset.hlx` is HX Edit's export of 03A (Cali Rectifire, 4x12 Cali V30 cab, no path B),
+and the document HX Edit read for it (op 4) is in the same capture. Converted with
+`DevicePreset::to_hlx`, every key nx-edit writes is also in the export, with the same value, except:
+
+- **Floats.** nx-edit writes the f32 widened to f64 (`0.25999999046325684`), HX Edit the f32's
+  shortest decimal (`0.260`; it pads to at least two decimals).
+- **Junctions without a path B.** Split and join both hold `before_slot: 0`; nx-edit writes
+  `@position: -1`, HX Edit split 0 and join 8. With a real split (Revv DM: 7 and 9) both write
+  `before_slot - 1`. So 0 means "not placed" [inferred], and the join's default is the end of path 0.
+
+What the export has and nx-edit does not write yet (72 of the export's 132 values):
+
+| hlx | export | document |
+|---|---|---|
+| `inputA` | `@model HelixStomp_AppDSPFlowInput`, `@input 1`, `noiseGate false`, `threshold -48.0`, `decay 0.10` | input slot: route 1, values `[false, -48.0, 0.1]` |
+| `inputB` | same model, `@input 0`, `decay 0.50` | the split's endpoint, route 0 |
+| `outputA` | `@model HelixStomp_AppDSPFlowOutputMain`, `@output 1`, `pan 0.50`, `gain 0.0` | output slot: route 1, values `[0.5, 0.0]` |
+| `outputB` | `@model HelixStomp_AppDSPFlowOutputSend`, `@output 0`, `Type true`, `pan`, `gain` | the join's endpoint |
+| `split` | `BalanceA 0.50`, `BalanceB 0.50`, `bypass false`, `@no_snapshot_bypass false` | split values `[0.5, 0.5, false]` |
+| `join` | `A Level 0.0`, `A Pan 0.50`, `B Level 0.0`, `B Pan 0.50`, `B Polarity false`, `Level 3.0`, `@no_snapshot_bypass false` | join values `[0.0, 0.5, 0.0, 0.5, false, 3.0]` |
+| blocks | `@type` (amp 1, cab 2), `@no_snapshot_bypass false`, amp `@bypassvolume 1.0` | not located; engine is 17 and 31 |
+| `global` | `@tempo 120.0`, `@pedalstate 2`, `@topology0 "A"`, `@topology1 0`, `@cursor_dsp/path/position 0`, `@cursor_group ""`, `@DtSelect 2`, `@PowercabMode 0`, `@PowercabSelect 2`, `@PowercabVoicing 0`, `@guitarinputZ 0`, `@guitarpad 0`, `@model "@global_params"` | tempo is key 5.16, pedal state 3.7, cursor key 6; the rest not located |
+| snapshots | `@pedalstate 0` each | not located |
+| `variax` | `@variax_model 0`, `magmode true`, `toneknob`/`volumeknob -0.10`, six string tunings 0, `customtuning false`, `lockctrls 0` | key 5, 45-56 [inferred, see "Top-level keys"] |
+| `meta` | `application "HX Edit"`, `appversion`, `build_sha` (= document key 7.37), `modifieddate`; top-level `meta.original/pbn/premium 0` | the application's own |
+
+The document holds the endpoint and junction values in the order noiseGate, threshold, decay
+(input), pan, gain (output), BalanceA, BalanceB, bypass (split) and A Level, A Pan, B Level, B Pan,
+B Polarity, Level (join), presumably `Helix.sym`'s order as for blocks [inferred from this one
+preset; the export lists its keys alphabetically]. `dsp1` is `{}` and there is no `footswitch` or `controller` key
+in the export.
 
 ### Editing [seen]
 
