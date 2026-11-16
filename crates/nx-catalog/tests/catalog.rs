@@ -133,3 +133,11 @@ fn a_res_folder_without_controls_still_loads() {
     assert_eq!(catalog.options("off_on"), None);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn segmented_controls_are_told_apart_from_lists() {
+    let catalog = Catalog::load(&fixture_dir()).unwrap();
+    assert!(catalog.segmented("off_on"));
+    assert!(!catalog.segmented("test_mics"));
+    assert!(!catalog.segmented("unknown"));
+}

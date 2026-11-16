@@ -10,7 +10,7 @@ use nx_hlx::Preset;
 
 use crate::device::BlockAddress;
 use crate::history::{History, Turn};
-use crate::layout::{Branch, Lane, Tile, branch, display_value, dragged, lanes, slot_columns, typed_value, wire_value};
+use crate::layout::{Branch, Control, Lane, Tile, branch, choice_value, chosen, control_for, display_value, dragged, lanes, slot_columns, typed_value, wire_value};
 use crate::live::{Live, Loaded, ParamChange, Update};
 use crate::theme;
 
@@ -382,21 +382,29 @@ impl EditorApp {
                     ui.spacing_mut().item_spacing.x = GAP;
                     for (name, value) in row {
                         let def = model.as_ref().and_then(|m| m.params.iter().find(|p| &p.id == name));
-                        let options = def.and_then(|d| self.catalog.as_ref()?.options(d.display_type.as_deref()?));
                         let reachable = file || address.as_ref().and_then(|a| a.target(name)).is_some();
-                        let switch = reachable && def.is_some_and(|d| d.value_type == 2) && value.is_boolean();
+                        let label = def.map_or(name.as_str(), |d| d.name.as_str());
+                        let choice = def.map(|d| (d, control_for(d, self.catalog.as_ref())));
+                        if let Some((def, Control::Buttons(names) | Control::List(names))) = &choice {
+                            let list = matches!(choice, Some((_, Control::List(_))));
+                            let card = ChoiceCard { width, label, names, current: chosen(value, def), color, enabled: reachable, list };
+                            if let Some(index) = card.show(ui, (&key, name)) {
+                                let before = value.as_bool().map_or_else(|| value.as_f64().unwrap_or_default(), |on| f64::from(u8::from(on)));
+                                let after = choice_value(index, def);
+                                if (after - before).abs() > 1e-9 {
+                                    turned = Some((name.clone(), after));
+                                    self.history.push(Turn { block: key.clone(), param: name.clone(), before, after });
+                                }
+                            }
+                            continue;
+                        }
+                        let options = def.and_then(|d| self.catalog.as_ref()?.options(d.display_type.as_deref()?));
                         let live = match (def, value.as_f64()) {
                             (Some(d), Some(v)) if reachable => dragged(v, d, 0.0).map(|_| (d, v)),
                             _ => None,
                         };
-                        let label = def.map_or(name.as_str(), |d| d.name.as_str());
                         let shown = display_value(value, def, options);
-                        let response = knob_card(ui, width, label, &shown, knob_fraction(value, def), color, live.is_some(), switch);
-                        if switch && response.clicked() {
-                            let before = f64::from(u8::from(value.as_bool() == Some(true)));
-                            turned = Some((name.clone(), 1.0 - before));
-                            self.history.push(Turn { block: key.clone(), param: name.clone(), before, after: 1.0 - before });
-                        }
+                        let response = knob_card(ui, width, label, &shown, knob_fraction(value, def), color, live.is_some());
                         let Some((def, v)) = live else { continue };
                         if response.drag_started() {
                             self.drag = Some(Drag { block: key.clone(), param: name.clone(), start: v, up: 0.0 });
@@ -1284,18 +1292,63 @@ fn write_param(preset: &mut Preset, key: &str, name: &str, value: serde_json::Va
     }
 }
 
-/// A parameter's card: dragged up and down when `live`, clicked on and off when a `switch`.
-#[allow(clippy::too_many_arguments)]
-fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, color: Color32, live: bool, switch: bool) -> egui::Response {
-    let sense = if live { Sense::drag() } else if switch { Sense::click() } else { Sense::hover() };
-    let (rect, response) = ui.allocate_exact_size(vec2(width, KNOB_CARD.y), sense);
-    let response = match (live, switch) {
-        (true, _) => response.on_hover_cursor(egui::CursorIcon::ResizeVertical),
-        (false, true) => response.on_hover_cursor(egui::CursorIcon::PointingHand),
-        _ => response,
-    };
+/// A parameter set by picking one of its named options: a row of buttons, or a drop-down for a
+/// `list`.
+struct ChoiceCard<'a> {
+    width: f32,
+    label: &'a str,
+    names: &'a [String],
+    current: Option<usize>,
+    color: Color32,
+    enabled: bool,
+    list: bool,
+}
+
+impl ChoiceCard<'_> {
+    /// Draws the card; the option picked, if one was. `id` keeps a drop-down apart from the others.
+    fn show(&self, ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug) -> Option<usize> {
+        let (rect, _) = ui.allocate_exact_size(vec2(self.width, KNOB_CARD.y), Sense::hover());
+        ui.painter().rect_filled(rect, CornerRadius::same(14), theme::RAISED);
+        ui.painter().text(rect.center_top() + vec2(0.0, 104.0), Align2::CENTER_CENTER, self.label, theme::regular(13.0), theme::TEXT_MID);
+        let area = Rect::from_min_size(rect.left_top() + vec2(10.0, 12.0), vec2(self.width - 20.0, 78.0));
+        let mut picked = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+            ui.add_enabled_ui(self.enabled, |ui| {
+                if self.list {
+                    ui.add_space(22.0);
+                    let shown = self.current.and_then(|i| self.names.get(i)).map_or("?", String::as_str);
+                    let combo = egui::ComboBox::from_id_salt(id).selected_text(shown).width(area.width()).show_ui(ui, |ui| {
+                        for (i, name) in self.names.iter().enumerate() {
+                            if ui.selectable_label(self.current == Some(i), name).clicked() {
+                                picked = Some(i);
+                            }
+                        }
+                    });
+                    combo.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, self.enabled, self.label));
+                    return;
+                }
+                let height = (area.height() / self.names.len().max(2) as f32 - 4.0).min(30.0);
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for (i, name) in self.names.iter().enumerate() {
+                    let on = self.current == Some(i);
+                    let text = RichText::new(name).font(theme::semibold(12.0)).color(if on { theme::BG } else { theme::TEXT_MID });
+                    let button = egui::Button::new(text).fill(if on { self.color } else { theme::RAISED_HI }).corner_radius(CornerRadius::same(8));
+                    if ui.add_sized(vec2(area.width(), height), button).clicked() && !on {
+                        picked = Some(i);
+                    }
+                }
+            });
+        });
+        picked
+    }
+}
+
+/// A parameter's card, dragged up and down when `live`.
+fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, color: Color32, live: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, KNOB_CARD.y), if live { Sense::drag() } else { Sense::hover() });
+    let response = if live { response.on_hover_cursor(egui::CursorIcon::ResizeVertical) } else { response };
     let painter = ui.painter();
-    let hot = (live || switch) && (response.hovered() || response.dragged());
+    let hot = live && (response.hovered() || response.dragged());
     painter.rect_filled(rect, CornerRadius::same(14), if hot { theme::RAISED_HI } else { theme::RAISED });
     let center = rect.center_top() + vec2(0.0, 54.0);
     let arc = |to: f32| -> Vec<Pos2> {
@@ -1495,6 +1548,48 @@ mod tests {
         harness.run();
         assert_eq!(drive_on_disk(&file), serde_json::json!(0.7));
         assert_eq!(harness.state().preset.as_ref().unwrap().name(), "Mark Lead");
+    }
+
+    /// A library file in the editor with HX Edit's real model data, the block `key` selected.
+    fn editor_with_catalog(file: &Path, key: &str) -> Option<Harness<'static, EditorApp>> {
+        let dir = std::env::var_os("NX_HXEDIT_RES").map(PathBuf::from).unwrap_or_else(nx_catalog::default_res_dir);
+        let catalog = Catalog::load(&dir).ok()?;
+        let (file, key) = (file.to_path_buf(), key.to_owned());
+        let mut harness = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |cc| {
+            theme::install(&cc.egui_ctx);
+            let mut app = EditorApp::new(None, Some(catalog), String::new(), None);
+            app.open_file(file);
+            app.selected_block = Some(key);
+            app
+        });
+        harness.run();
+        Some(harness)
+    }
+
+    fn param_of(harness: &Harness<'static, EditorApp>, key: &str, name: &str) -> serde_json::Value {
+        let preset = harness.state().preset.clone().unwrap();
+        preset.blocks().into_iter().find(|b| b.key == key).unwrap().params.into_iter().find(|(k, _)| k == name).unwrap().1
+    }
+
+    #[test]
+    fn a_mic_is_picked_from_a_drop_down() {
+        let file = library_file("mic-list");
+        let Some(mut harness) = editor_with_catalog(&file, "block6") else { return };
+        harness.get_by_label("Mic").click();
+        harness.run();
+        harness.get_by_label("121 Ribbon").click();
+        harness.run();
+        assert_eq!(param_of(&harness, "block6", "Mic"), serde_json::json!(5));
+        assert!(harness.state().unsaved);
+    }
+
+    #[test]
+    fn a_switch_is_set_with_its_button() {
+        let file = library_file("switch-buttons");
+        let Some(mut harness) = editor_with_catalog(&file, "block4") else { return };
+        harness.get_by_label("Gating").click();
+        harness.run();
+        assert_eq!(param_of(&harness, "block4", "DynType"), serde_json::json!(true));
     }
 
     #[test]
