@@ -503,8 +503,7 @@ impl EditorApp {
         });
         match pick {
             Some((_, true)) => self.leave(Leave::Pedal),
-            Some((index, false)) if self.showing_file.is_some() => self.leave(Leave::Select(index)),
-            Some((index, false)) => self.select_preset(index),
+            Some((index, false)) => self.leave(Leave::Select(index)),
             None => {}
         }
     }
@@ -518,13 +517,29 @@ impl EditorApp {
         self.status = format!("Switching to {}…", nx_proto::slot_label(index));
     }
 
-    /// Goes elsewhere, first asking what to do with unsaved edits to the library file shown.
+    /// Goes elsewhere, first asking what to do with unsaved edits to the library file shown, or to
+    /// the pedal's preset when another preset would replace them on the pedal.
     fn leave(&mut self, to: Leave) {
-        if self.unsaved {
+        if self.unsaved || self.pedal_edits_lost_by(&to) {
             self.leaving = Some(to);
         } else {
             self.go(to);
         }
+    }
+
+    /// Only a preset switch drops the pedal's edit buffer; snapshots and library files leave it be.
+    fn pedal_edits_lost_by(&self, to: &Leave) -> bool {
+        matches!(to, Leave::Select(_)) && self.showing_file.is_none() && self.can_save()
+    }
+
+    /// The answer to the question `leave` asked: save first or not, then go on.
+    fn decide(&mut self, save: bool) {
+        let Some(to) = self.leaving.take() else { return };
+        if save && !self.save() {
+            self.leaving = Some(to);
+            return;
+        }
+        self.go(to);
     }
 
     fn go(&mut self, to: Leave) {
@@ -551,21 +566,20 @@ impl EditorApp {
         if self.showing_file.is_some() { self.unsaved } else { self.pedal_unsaved && self.live().is_some() }
     }
 
-    fn save(&mut self) {
-        if self.showing_file.is_some() {
-            self.save_file();
-        } else {
-            self.save_to_pedal();
-        }
+    /// Saves what is shown; false when that could not even be started.
+    fn save(&mut self) -> bool {
+        if self.showing_file.is_some() { self.save_file() } else { self.save_to_pedal() }
     }
 
     /// Has the pedal store its edits at the preset's own place under its own name, as HX Edit's
-    /// Save does; the status says when the pedal has done so.
-    fn save_to_pedal(&mut self) {
-        let Some(connection) = self.live() else { return };
-        let (Some(index), Some(preset)) = (connection.current, &self.preset) else { return };
+    /// Save does; the status says when the pedal has done so. Commands to the pedal run in order,
+    /// so a switch asked for after this happens after the save.
+    fn save_to_pedal(&mut self) -> bool {
+        let Some(connection) = self.live() else { return false };
+        let (Some(index), Some(preset)) = (connection.current, &self.preset) else { return false };
         connection.live.save(0, index, preset.name());
         self.status = format!("Saving to {}…", nx_proto::slot_label(index));
+        true
     }
 
     /// Writes the library file shown; false, with the reason in the status, when that failed.
@@ -585,17 +599,27 @@ impl EditorApp {
         }
     }
 
-    /// Asks whether to save the library file's edits before going on.
+    /// Asks whether to save the edits to what is shown, a library file or the pedal's preset,
+    /// before going on.
     fn leave_modal(&mut self, ctx: &egui::Context) {
-        let Some(to) = self.leaving.clone() else { return };
+        if self.leaving.is_none() {
+            return;
+        }
         let name = self.preset.as_ref().map_or_else(String::new, |p| p.name().to_owned());
+        let (question, detail) = match self.connection.as_ref().and_then(|c| c.current).filter(|_| self.showing_file.is_none()) {
+            Some(index) => (
+                format!("Save the changes to {name} at {}?", nx_proto::slot_label(index)),
+                "They are only in the pedal's edit buffer; switching presets drops them, as a footswitch does.",
+            ),
+            None => (format!("Save the changes to {name}?"), "They are only in nx-edit; the library file still has the old version."),
+        };
         let mut choice = None;
         let frame = Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(18)).inner_margin(Margin::same(24));
         let modal = egui::Modal::new(egui::Id::unique("unsaved-changes")).frame(frame).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.spacing_mut().item_spacing.y = 12.0;
-            ui.label(RichText::new(format!("Save the changes to {name}?")).font(theme::semibold(20.0)));
-            ui.label(RichText::new("They are only in nx-edit; the library file still has the old version.").font(theme::regular(13.0)).color(theme::TEXT_DIM));
+            ui.label(RichText::new(question).font(theme::semibold(20.0)));
+            ui.label(RichText::new(detail).font(theme::regular(13.0)).color(theme::TEXT_DIM));
             ui.horizontal(|ui| {
                 let button = |text: &str, primary: bool| {
                     let label = RichText::new(text).font(theme::semibold(15.0));
@@ -616,16 +640,8 @@ impl EditorApp {
         if modal.should_close() {
             self.leaving = None;
         }
-        match choice {
-            Some(true) if self.save_file() => {
-                self.leaving = None;
-                self.go(to);
-            }
-            Some(false) => {
-                self.leaving = None;
-                self.go(to);
-            }
-            _ => {}
+        if let Some(save) = choice {
+            self.decide(save);
         }
     }
 
@@ -1531,5 +1547,59 @@ mod pedal_tests {
     fn edits_the_pedal_reports_unsaved_can_be_saved() {
         let Some((app, _device)) = on_nx_test(true) else { return };
         assert!(app.can_save());
+    }
+
+    /// The RPC requests the pedal got, once it has had `n` of the kinds in `want`.
+    fn sent_once(device: &FakeDevice, want: impl Fn(&Request) -> bool, n: usize) -> Vec<Request> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let sent: Vec<Request> = device.requests().into_iter().map(|(_, _, r)| r).filter(|r| want(r)).collect();
+            if sent.len() >= n {
+                return sent;
+            }
+            assert!(std::time::Instant::now() < deadline, "only {sent:?} sent");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn save_or_select(r: &Request) -> bool {
+        matches!(r, Request::SavePreset { .. } | Request::SelectPreset { .. })
+    }
+
+    #[test]
+    fn switching_away_from_unsaved_pedal_edits_asks_first() {
+        let Some((mut app, device)) = on_nx_test(true) else { return };
+        app.leave(Leave::Select(5));
+        assert!(matches!(app.leaving, Some(Leave::Select(5))));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(device.requests().iter().all(|(_, _, r)| !save_or_select(r)), "nothing is sent before the answer");
+    }
+
+    #[test]
+    fn save_and_continue_saves_on_the_pedal_before_switching() {
+        let Some((mut app, device)) = on_nx_test(true) else { return };
+        app.leave(Leave::Select(5));
+        app.decide(true);
+        let sent = sent_once(&device, save_or_select, 2);
+        assert_eq!(
+            sent,
+            [Request::SavePreset { setlist: 0, index: 6, name: "NX Test".into() }, Request::SelectPreset { setlist: 0, index: 5 }]
+        );
+    }
+
+    #[test]
+    fn discard_switches_without_saving() {
+        let Some((mut app, device)) = on_nx_test(true) else { return };
+        app.leave(Leave::Select(5));
+        app.decide(false);
+        assert_eq!(sent_once(&device, save_or_select, 1), [Request::SelectPreset { setlist: 0, index: 5 }]);
+    }
+
+    #[test]
+    fn switching_from_a_saved_pedal_preset_does_not_ask() {
+        let Some((mut app, device)) = on_nx_test(false) else { return };
+        app.leave(Leave::Select(5));
+        assert!(app.leaving.is_none());
+        assert_eq!(sent_once(&device, save_or_select, 1), [Request::SelectPreset { setlist: 0, index: 5 }]);
     }
 }
