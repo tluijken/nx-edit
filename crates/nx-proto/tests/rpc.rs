@@ -75,3 +75,16 @@ fn select_preset_and_snapshot() {
     let snap = rmpv::decode::read_value(&mut &Request::SelectSnapshot { index: 2 }.encode(1035)[..]).unwrap();
     assert_eq!(snap.to_string(), "{102: 1035, 100: 88, 101: {92: 2}}");
 }
+
+/// HX Edit saving 03A as "NX Test" in capture 17, the message body as it went out.
+const SAVE_03A: [u8; 23] = [
+    0x83, 0x66, 0xcd, 0x03, 0xf1, 0x64, 0x47, 0x65, 0x83, 0x6b, 0x00, 0x6c, 0x06, 0x6d, 0xa8, b'N', b'X', b' ', b'T', b'e', b's', b't', 0x00,
+];
+
+#[test]
+fn save_preset_is_the_message_hx_edit_sends() {
+    let request = Request::SavePreset { setlist: 0, index: 6, name: "NX Test".into() };
+    assert_eq!(request.encode(1009), SAVE_03A);
+    let value = rmpv::decode::read_value(&mut &SAVE_03A[..]).unwrap();
+    assert_eq!(Request::from_value(&value), Some((1009, request)));
+}

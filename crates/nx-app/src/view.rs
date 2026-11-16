@@ -83,6 +83,9 @@ pub struct EditorApp {
     customtone: crate::customtone::CustomToneView,
     /// Edits to the library file shown that are not written to it yet.
     unsaved: bool,
+    /// Edits on the pedal not yet saved to the preset's place, as the pedal reported them or as made
+    /// here since.
+    pedal_unsaved: bool,
     /// Where to go once the unsaved edits are saved or discarded, while that is asked.
     leaving: Option<Leave>,
     /// The window may close: the unsaved edits were saved or discarded.
@@ -125,6 +128,7 @@ impl EditorApp {
             screen: Screen::Editor,
             customtone: Default::default(),
             unsaved: false,
+            pedal_unsaved: false,
             leaving: None,
             closing: false,
         }
@@ -157,13 +161,17 @@ impl EditorApp {
                         ui.label(RichText::new(format!("Snapshot {} · {name}", current + 1)).font(theme::semibold(13.0)));
                     });
                 }
-                if self.unsaved {
+                if self.can_save() {
                     let button = egui::Button::new(RichText::new("Save").font(theme::semibold(13.0)).color(theme::BG))
                         .fill(theme::ACCENT)
                         .corner_radius(CornerRadius::same(255))
                         .min_size(vec2(72.0, 36.0));
-                    save = ui.add(button).on_hover_text("Write the changes to the library file (Ctrl+S)").clicked();
-                    ui.label(RichText::new("Unsaved changes").font(theme::regular(12.0)).color(theme::TEXT_DIM));
+                    let (hint, note) = match self.connection.as_ref().and_then(|c| c.current).filter(|_| self.showing_file.is_none()) {
+                        Some(index) => (format!("Save on the pedal at {} (Ctrl+S)", nx_proto::slot_label(index)), "Not saved on the pedal"),
+                        None => ("Write the changes to the library file (Ctrl+S)".to_owned(), "Unsaved changes"),
+                    };
+                    save = ui.add(button).on_hover_text(hint).clicked();
+                    ui.label(RichText::new(note).font(theme::regular(12.0)).color(theme::TEXT_DIM));
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -422,17 +430,19 @@ impl EditorApp {
             && let Some(param) = address.param(name)
         {
             connection.live.set(connection.generation, address.slot, address.sub, param, value as f32);
+            self.pedal_unsaved = true;
         }
     }
 
-    /// Ctrl+Z takes the last knob turn back, Ctrl+Shift+Z or Ctrl+Y makes it again, Ctrl+S saves a
-    /// library file; only while no text field has the keyboard.
+    /// Ctrl+Z takes the last knob turn back, Ctrl+Shift+Z or Ctrl+Y makes it again, Ctrl+S saves
+    /// what is shown, to its library file or on the pedal; only while no text field has the
+    /// keyboard.
     fn edit_keys(&mut self, ctx: &egui::Context) {
         if !self.editable() || self.leaving.is_some() || ctx.memory(|m| m.focused().is_some()) {
             return;
         }
-        if self.unsaved && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
-            self.save_file();
+        if self.can_save() && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
+            self.save();
         }
         let (undo, redo) = ctx.input(|i| {
             let z = i.modifiers.command && i.key_pressed(egui::Key::Z);
@@ -533,6 +543,29 @@ impl EditorApp {
             }
             Leave::Quit => self.closing = true,
         }
+    }
+
+    /// Whether what is shown has edits Save would keep: a library file's, or the pedal's while
+    /// connected.
+    fn can_save(&self) -> bool {
+        if self.showing_file.is_some() { self.unsaved } else { self.pedal_unsaved && self.live().is_some() }
+    }
+
+    fn save(&mut self) {
+        if self.showing_file.is_some() {
+            self.save_file();
+        } else {
+            self.save_to_pedal();
+        }
+    }
+
+    /// Has the pedal store its edits at the preset's own place under its own name, as HX Edit's
+    /// Save does; the status says when the pedal has done so.
+    fn save_to_pedal(&mut self) {
+        let Some(connection) = self.live() else { return };
+        let (Some(index), Some(preset)) = (connection.current, &self.preset) else { return };
+        connection.live.save(0, index, preset.name());
+        self.status = format!("Saving to {}…", nx_proto::slot_label(index));
     }
 
     /// Writes the library file shown; false, with the reason in the status, when that failed.
@@ -760,7 +793,7 @@ impl EditorApp {
         self.showing_file = None;
         self.drag = None;
         self.history.clear();
-        self.status = "Connected · changes not saved".to_owned();
+        self.status = "Connected".to_owned();
     }
 
     /// Stops showing a library file that is gone, for the pedal's preset when there is one.
@@ -801,6 +834,7 @@ impl EditorApp {
         let Some(connection) = self.live() else { return };
         let Some(slot) = connection.addresses.get(key).map(|a| a.slot) else { return };
         connection.live.set_enabled(connection.generation, slot, !block.enabled);
+        self.pedal_unsaved = true;
         if let Some(preset) = self.preset.as_mut() {
             preset.set_enabled(key, !block.enabled);
         }
@@ -829,6 +863,7 @@ impl EditorApp {
             match update {
                 Update::Changed(generation, change) => self.apply_change(generation, change),
                 Update::Loaded(loaded) => self.apply_loaded(loaded),
+                Update::Saved(index) => self.apply_saved(index),
             }
         }
     }
@@ -846,6 +881,15 @@ impl EditorApp {
         if let Some(preset) = target {
             preset.set_param(&key, &name, serde_json::json!(change.value));
         }
+        self.pedal_unsaved = true;
+    }
+
+    /// The pedal stored its edits at `index`; when that is the preset it holds, nothing is unsaved.
+    fn apply_saved(&mut self, index: u64) {
+        if self.connection.as_ref().is_some_and(|c| c.current == Some(index)) {
+            self.pedal_unsaved = false;
+            self.status = format!("Saved to {}", nx_proto::slot_label(index));
+        }
     }
 
     /// Shows the preset the pedal holds after a switch, by a click here or a footswitch, or after a
@@ -855,6 +899,7 @@ impl EditorApp {
     fn apply_loaded(&mut self, loaded: Loaded) {
         let Some(connection) = self.connection.as_mut() else { return };
         let Loaded { generation, preset: loaded } = loaded;
+        self.pedal_unsaved = loaded.modified;
         let same_preset = loaded.index.is_some() && loaded.index == connection.current;
         connection.generation = generation;
         connection.current = loaded.index;
@@ -884,7 +929,7 @@ impl EditorApp {
         self.preset = Some(hlx);
         self.showing_file = None;
         self.pedal_preset = None;
-        self.status = "Connected · changes not saved".to_owned();
+        self.status = "Connected".to_owned();
     }
 
     fn snapshots(&mut self, ui: &mut Ui) {
@@ -1239,7 +1284,7 @@ impl eframe::App for EditorApp {
         }
         egui::Panel::top("top").frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| {
             if self.top_bar(ui) {
-                self.save_file();
+                self.save();
             }
         });
         egui::Panel::left("rail")
@@ -1414,6 +1459,7 @@ mod tests {
 mod pedal_tests {
     use std::path::PathBuf;
 
+    use nx_proto::Request;
     use nx_session::Session;
     use nx_session::fake::FakeDevice;
 
@@ -1441,12 +1487,49 @@ mod pedal_tests {
         app.open_file(file.clone());
         app.toggle_block("block0");
         let document = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/02-select-preset-01C.doc")).unwrap();
-        let switched = crate::device::DevicePreset { name: "Revv DM".into(), index: Some(2), document };
+        let switched = crate::device::DevicePreset { name: "Revv DM".into(), index: Some(2), document, modified: false };
         app.apply_loaded(Loaded { generation: 1, preset: switched });
         assert_eq!(app.showing_file.as_deref(), Some(file.as_path()));
         assert!(app.unsaved);
         assert_eq!(app.preset.as_ref().unwrap().name(), "Mark Lead");
         assert_eq!(app.pedal_preset.as_ref().unwrap().name(), "Revv DM");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The app showing 03A "NX Test" as the pedal reported it, with `modified` as key 117 said.
+    fn on_nx_test(modified: bool) -> Option<(EditorApp, FakeDevice)> {
+        let (connection, device) = connection()?;
+        let mut app = EditorApp::new(None, None, String::new(), Some(connection));
+        let document = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/18-export-preset.doc")).unwrap();
+        let preset = crate::device::DevicePreset { name: "NX Test".into(), index: Some(6), document, modified };
+        app.apply_loaded(Loaded { generation: 0, preset });
+        Some((app, device))
+    }
+
+    fn saves(device: &FakeDevice) -> Vec<Request> {
+        device.requests().into_iter().map(|(_, _, r)| r).filter(|r| matches!(r, Request::SavePreset { .. })).collect()
+    }
+
+    #[test]
+    fn a_knob_turn_on_the_pedal_can_be_saved_to_its_place() {
+        let Some((mut app, device)) = on_nx_test(false) else { return };
+        assert!(!app.can_save());
+        app.set_param("block0", "Bass", 0.3);
+        assert!(app.can_save());
+        app.save();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while app.can_save() {
+            assert!(std::time::Instant::now() < deadline, "the save was never reported");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.take_updates();
+        }
+        assert_eq!(saves(&device), [Request::SavePreset { setlist: 0, index: 6, name: "NX Test".into() }]);
+        assert_eq!(app.status, "Saved to 03A");
+    }
+
+    #[test]
+    fn edits_the_pedal_reports_unsaved_can_be_saved() {
+        let Some((app, _device)) = on_nx_test(true) else { return };
+        assert!(app.can_save());
     }
 }

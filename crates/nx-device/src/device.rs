@@ -20,6 +20,8 @@ pub struct DevicePreset {
     /// The preset's place on the pedal (key 108 of op 23), 0 for 01A.
     pub index: Option<u64>,
     pub document: Vec<u8>,
+    /// Whether the pedal holds edits not yet saved to the preset's place (key 117 of op 23).
+    pub modified: bool,
 }
 
 /// The last preset HX Edit read in a capture.
@@ -69,7 +71,12 @@ pub fn preset_from_session(session: &nx_session::Session) -> Result<DevicePreset
         Value::Binary(b) => b,
         other => return Err(format!("preset document: unexpected reply {other}")),
     };
-    Ok(DevicePreset { name: preset_name(&info).unwrap_or_default(), index: info_field(&info, 108).and_then(Value::as_u64), document })
+    Ok(DevicePreset {
+        name: preset_name(&info).unwrap_or_default(),
+        index: info_field(&info, 108).and_then(Value::as_u64),
+        document,
+        modified: info_field(&info, 117).and_then(Value::as_bool).unwrap_or(false),
+    })
 }
 
 fn info_field(info: &Value, key: u64) -> Option<&Value> {
@@ -87,7 +94,7 @@ fn preset_name(info: &Value) -> Option<String> {
 fn preset_from_frames(frames: impl IntoIterator<Item = Frame>) -> Result<Option<DevicePreset>, String> {
     let mut reassembler = Reassembler::default();
     let mut asked: Vec<(u64, u64)> = Vec::new();
-    let (mut name, mut index, mut document) = (None, None, None);
+    let (mut name, mut index, mut document, mut modified) = (None, None, None, false);
     for frame in frames {
         for msg in reassembler.push(&frame).map_err(|e| e.to_string())? {
             let Ok(value) = msg.decode() else { continue };
@@ -111,12 +118,13 @@ fn preset_from_frames(frames: impl IntoIterator<Item = Frame>) -> Result<Option<
                 (23, Some(info)) => {
                     name = preset_name(info).or(name);
                     index = info_field(info, 108).and_then(Value::as_u64).or(index);
+                    modified = info_field(info, 117).and_then(Value::as_bool).unwrap_or(modified);
                 }
                 _ => {}
             }
         }
     }
-    Ok(document.map(|document| DevicePreset { name: name.unwrap_or_default(), index, document }))
+    Ok(document.map(|document| DevicePreset { name: name.unwrap_or_default(), index, document, modified }))
 }
 
 /// Where an `.hlx` block lives on the pedal: what op 78 and op 30 call slot (key 98) and key 26,
@@ -284,7 +292,7 @@ mod tests {
     /// Revv DM as HX Edit read it from slot 01C in capture 02, or after the edits of capture 05.
     fn captured(name: &str) -> DevicePreset {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures").join(format!("{name}.doc"));
-        DevicePreset { name: "Revv DM".into(), index: Some(2), document: std::fs::read(path).unwrap() }
+        DevicePreset { name: "Revv DM".into(), index: Some(2), document: std::fs::read(path).unwrap(), modified: false }
     }
 
     fn fixture() -> nx_hlx::Preset {
@@ -540,7 +548,7 @@ mod tests {
     /// nothing on path B.
     fn nx_test() -> DevicePreset {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/18-export-preset.doc");
-        DevicePreset { name: "NX Test".into(), index: Some(6), document: std::fs::read(path).unwrap() }
+        DevicePreset { name: "NX Test".into(), index: Some(6), document: std::fs::read(path).unwrap(), modified: false }
     }
 
     #[test]

@@ -299,7 +299,7 @@ mod pedal_tests {
 
     fn captured() -> DevicePreset {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/02-select-preset-01C.doc");
-        DevicePreset { name: "Revv DM".into(), index: Some(2), document: std::fs::read(path).unwrap() }
+        DevicePreset { name: "Revv DM".into(), index: Some(2), document: std::fs::read(path).unwrap(), modified: false }
     }
 
     fn fixture() -> Preset {

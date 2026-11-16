@@ -14,7 +14,8 @@ Tested against an HX Stomp on firmware 3.71, with HX Edit 3.82 as the reference.
 - Reads the current preset from the pedal and draws its signal chain, including path B splits and
   joins.
 - Turns knobs, switches blocks on and off and changes snapshots on the pedal. It follows edits made
-  on the pedal itself, and undo and redo work for knob turns.
+  on the pedal itself, and undo and redo work for knob turns. Save (Ctrl+S) stores the edits in the
+  preset's own place on the pedal.
 - Lists the pedal's presets and follows preset switches.
 - Keeps a library of `.hlx` files beside the pedal's list. You can drop files in, rename them and
   move them to the trash. Library presets can be edited offline and saved (Ctrl+S); nx-edit asks
@@ -23,7 +24,7 @@ Tested against an HX Stomp on firmware 3.71, with HX Edit 3.82 as the reference.
 
 ## Not yet
 
-- Saving a preset to the pedal, and writing to a bool or int parameter.
+- Writing to a bool or int parameter.
 - Exporting the pedal's preset as an `.hlx` that HX Edit accepts.
 - Importing a preset onto the pedal ("assign to the pedal").
 - Firmware updates.

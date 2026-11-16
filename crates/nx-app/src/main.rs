@@ -82,7 +82,7 @@ fn main() -> eframe::Result {
             Ok((p, link, list_error)) => {
                 status.push(match source {
                     Source::Capture(path) => format!("From capture {}", path.display()),
-                    Source::Device => "Connected · changes not saved".to_owned(),
+                    Source::Device => "Connected".to_owned(),
                 });
                 status.extend(list_error);
                 connection = link;

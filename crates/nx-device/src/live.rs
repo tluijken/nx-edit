@@ -47,6 +47,7 @@ enum Command {
     Select { setlist: u64, index: u64 },
     Snapshot(u64),
     Enabled { generation: u64, slot: u64, enabled: bool },
+    Save { setlist: u64, index: u64, name: String },
 }
 
 /// A preset read from the pedal, and the generation edits made on it must carry.
@@ -62,6 +63,8 @@ pub enum Update {
     Loaded(Loaded),
     /// A parameter change, with the generation of the preset it was made on.
     Changed(u64, ParamChange),
+    /// The pedal stored its edits at this place (op 71).
+    Saved(u64),
 }
 
 pub struct Live {
@@ -109,6 +112,11 @@ impl Live {
     /// Turns a block on or off (op 41) on the preset of `generation`; `slot` as op 30 addresses it.
     pub fn set_enabled(&self, generation: u64, slot: u64, enabled: bool) {
         self.send(Command::Enabled { generation, slot, enabled });
+    }
+
+    /// Stores the pedal's edits at a place under `name` (op 71), reported as [`Update::Saved`].
+    pub fn save(&self, setlist: u64, index: u64, name: &str) {
+        self.send(Command::Save { setlist, index, name: name.to_owned() });
     }
 
     /// What the pedal reported since the last call, in order.
@@ -276,6 +284,9 @@ impl Worker {
                 outcome
             }
             Command::Snapshot(index) => self.session.request(Request::SelectSnapshot { index }).map(drop),
+            Command::Save { setlist, index, name } => self.session.request(Request::SavePreset { setlist, index, name }).map(|_| {
+                _ = self.out.update.send(Update::Saved(index));
+            }),
         };
         outcome.map_err(|e| {
             _ = self.out.report.send(format!("{e}; writing stopped"));
@@ -427,7 +438,7 @@ mod tests {
             .into_iter()
             .find_map(|u| match u {
                 Update::Loaded(loaded) => Some(loaded),
-                Update::Changed(..) => None,
+                Update::Changed(..) | Update::Saved(_) => None,
             })
             .unwrap()
     }
@@ -586,5 +597,34 @@ mod tests {
             !errors.is_empty()
         });
         assert!(errors.iter().any(|e| e.contains("status 5")), "{errors:?}");
+    }
+
+    #[test]
+    fn saving_sends_op_71_for_the_place_and_name_and_reports_it() {
+        let device = device(echo);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        live.save(0, 6, "NX Test");
+        let mut saved = Vec::new();
+        wait_until("save not reported", || {
+            saved.extend(live.updates().into_iter().filter_map(|u| match u {
+                Update::Saved(index) => Some(index),
+                _ => None,
+            }));
+            !saved.is_empty()
+        });
+        assert_eq!(saved, [6]);
+        assert!(sent(&device).contains(&Request::SavePreset { setlist: 0, index: 6, name: "NX Test".into() }));
+    }
+
+    #[test]
+    fn a_loaded_preset_says_whether_the_pedal_holds_unsaved_edits() {
+        let device = device(|req| match req {
+            Request::PresetInfo => Reply::Ok(Value::Map(vec![(108.into(), 6.into()), (109.into(), "NX Test\0".into()), (117.into(), true.into())])),
+            Request::PresetDocument => Reply::Ok(Value::from("document")),
+            _ => echo(req),
+        });
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        switched_to(&device, 6);
+        assert!(wait_for_load(&live).preset.modified);
     }
 }
