@@ -2478,6 +2478,7 @@ dependencies = [
  "nx-usb",
  "rmpv",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

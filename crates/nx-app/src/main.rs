@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 mod account;
 mod cli;
 mod customtone;
@@ -14,7 +16,17 @@ enum Source {
     Device,
 }
 
+/// A GUI-subsystem program gets no console of its own; borrowing the one it was started from keeps
+/// `--help` and `--import-hxedit` output visible in a terminal.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
 fn main() -> eframe::Result {
+    #[cfg(windows)]
+    attach_parent_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut status = Vec::new();
     let res_dir = nx_catalog::default_res_dir();
@@ -99,6 +111,7 @@ fn main() -> eframe::Result {
             .with_app_id("nx-edit")
             .with_inner_size([1200.0, 720.0])
             .with_min_inner_size([800.0, 500.0]),
+        centered: true,
         ..Default::default()
     };
     eframe::run_native(
