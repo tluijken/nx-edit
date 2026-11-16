@@ -143,3 +143,15 @@ fn set_name_renames_the_preset() {
     preset.set_name("Revv Live");
     assert_eq!(Preset::from_slice(&preset.to_vec_pretty()).unwrap().name(), "Revv Live");
 }
+
+#[test]
+fn trails_are_read_and_switched_where_a_block_has_them() {
+    let mut preset = Preset::from_slice(&fixture("Revv_DM.hlx")).unwrap();
+    let trails = |p: &Preset, key: &str| p.blocks().into_iter().find(|b| b.key == key).unwrap().trails;
+    assert_eq!(trails(&preset, "block4"), Some(true));
+    assert_eq!(trails(&preset, "block2"), None);
+    assert!(preset.set_trails("block4", false));
+    assert_eq!(trails(&preset, "block4"), Some(false));
+    assert!(!preset.set_trails("block2", true), "an amp has no trails to switch");
+    assert_eq!(trails(&preset, "block2"), None);
+}

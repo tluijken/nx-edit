@@ -25,6 +25,8 @@ pub struct Block {
     pub enabled: bool,
     /// Model parameters in file order; `@`-prefixed metadata is left out.
     pub params: Vec<(String, Value)>,
+    /// A delay's or reverb's `@trails`: whether it rings on once bypassed. `None` for blocks without.
+    pub trails: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,6 +77,7 @@ impl Preset {
                         .filter(|(k, _)| !k.starts_with('@'))
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
+                    trails: obj.get("@trails").and_then(Value::as_bool),
                 })
             })
             .collect();
@@ -131,6 +134,14 @@ impl Preset {
         if let Some(meta) = self.raw.pointer_mut("/data/meta").and_then(Value::as_object_mut) {
             meta.insert("name".into(), Value::from(name));
         }
+    }
+
+    /// Switches a delay's or reverb's trails; false for a block that has none.
+    pub fn set_trails(&mut self, block_key: &str, on: bool) -> bool {
+        let slot = self.raw.pointer_mut("/data/tone/dsp0").and_then(|d| d.get_mut(block_key)).and_then(|b| b.get_mut("@trails"));
+        let Some(trails) = slot.filter(|t| t.is_boolean()) else { return false };
+        *trails = Value::Bool(on);
+        true
     }
 
     /// Switches a block on or off, in the current snapshot as well; false if there is no such block.

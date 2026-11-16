@@ -22,6 +22,8 @@ const BLOCK_H: f32 = 104.0;
 const MIN_COLUMN: f32 = 104.0;
 const SIDE_W: f32 = 340.0;
 const KNOB_CARD: egui::Vec2 = vec2(116.0, 140.0);
+/// The `.hlx` key of a delay's or reverb's trails switch.
+const TRAILS: &str = "@trails";
 
 /// The open session with the pedal and where each block of the shown preset lives on it.
 pub struct Connection {
@@ -373,7 +375,9 @@ impl EditorApp {
             ui.add_space(8.0);
             let per_row = (((ui.available_width() + GAP) / (KNOB_CARD.x + GAP)).floor() as usize).max(1);
             let width = (ui.available_width() - GAP * (per_row - 1) as f32) / per_row as f32;
-            for row in block.params.chunks(per_row) {
+            let mut cards = block.params.clone();
+            cards.extend(block.trails.map(|on| (TRAILS.to_owned(), serde_json::json!(on))));
+            for row in cards.chunks(per_row) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = GAP;
                     for (name, value) in row {
@@ -435,7 +439,7 @@ impl EditorApp {
     fn set_param(&mut self, key: &str, name: &str, value: f64) {
         let typed = typed_value(self.param_def(key, name), value);
         if let Some(preset) = self.preset.as_mut() {
-            preset.set_param(key, name, typed.clone());
+            write_param(preset, key, name, typed.clone());
         }
         if self.showing_file.is_some() {
             self.unsaved = true;
@@ -913,7 +917,7 @@ impl EditorApp {
         }
         let target = if self.showing_file.is_some() { self.pedal_preset.as_mut() } else { self.preset.as_mut() };
         if let Some(preset) = target {
-            preset.set_param(&key, &name, value);
+            write_param(preset, &key, &name, value);
         }
         self.pedal_unsaved = true;
     }
@@ -1268,6 +1272,18 @@ fn knob_fraction(value: &serde_json::Value, def: Option<&nx_catalog::ParamDef>) 
 }
 
 /// A parameter as a card with an arc knob; a live one is dragged up and down to turn it.
+/// Writes a parameter into a preset. A delay's or reverb's trails sit under `@trails`, which
+/// `Preset::set_param` leaves alone as metadata.
+fn write_param(preset: &mut Preset, key: &str, name: &str, value: serde_json::Value) {
+    if name == TRAILS {
+        if let Some(on) = value.as_bool() {
+            preset.set_trails(key, on);
+        }
+    } else {
+        preset.set_param(key, name, value);
+    }
+}
+
 /// A parameter's card: dragged up and down when `live`, clicked on and off when a `switch`.
 #[allow(clippy::too_many_arguments)]
 fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, color: Color32, live: bool, switch: bool) -> egui::Response {
@@ -1634,6 +1650,25 @@ mod pedal_tests {
         assert_eq!(sent, [Request::SetParam { block: 3, path: 0, param: 0, value: rmpv::Value::from(9) }]);
         let mic = app.preset.as_ref().unwrap().blocks().into_iter().find(|b| b.key == "block1").unwrap().params.into_iter().find(|(k, _)| k == "Mic").unwrap().1;
         assert_eq!(mic, serde_json::json!(9));
+    }
+
+    fn delay_trails(app: &EditorApp) -> Option<bool> {
+        app.preset.as_ref().unwrap().blocks().into_iter().find(|b| b.key == "block4").unwrap().trails
+    }
+
+    #[test]
+    fn trails_switch_on_the_pedal_as_the_first_extra_value() {
+        let (Some((connection, device)), Some(catalog)) = (connection(), real_catalog()) else { return };
+        let mut app = EditorApp::new(None, Some(catalog), String::new(), Some(connection));
+        let document = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/02-select-preset-01C.doc")).unwrap();
+        app.apply_loaded(Loaded { generation: 0, preset: crate::device::DevicePreset { name: "Revv DM".into(), index: Some(2), document, modified: false } });
+        assert_eq!(delay_trails(&app), Some(true));
+        app.set_param("block4", "@trails", 0.0);
+        assert_eq!(delay_trails(&app), Some(false));
+        let sent = sent_once(&device, |r| matches!(r, Request::SetExtra { .. }), 1);
+        assert_eq!(sent, [Request::SetExtra { block: 5, path: 0, index: 0, value: rmpv::Value::Boolean(false) }]);
+        app.apply_change(0, ParamChange { slot: 5, sub: 0, param: crate::device::Param::Extra(0), value: rmpv::Value::Boolean(true) });
+        assert_eq!(delay_trails(&app), Some(true), "the pedal's own switch is followed");
     }
 
     #[test]

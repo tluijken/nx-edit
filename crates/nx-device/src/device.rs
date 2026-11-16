@@ -7,7 +7,7 @@ use std::path::Path;
 
 use nx_capture::{Filter, read_transfers};
 use nx_catalog::ModelSymbols;
-use nx_proto::{Document, Frame, ParamValue, RPC_CHANNEL, Reassembler, Request, SlotKind, split_transfer};
+use nx_proto::{Document, Frame, ParamValue, RPC_CHANNEL, Reassembler, Request, SlotKind, Values, split_transfer};
 use rmpv::Value;
 use serde_json::{Map, json};
 
@@ -138,6 +138,8 @@ pub struct BlockAddress {
     /// probably the sub-block of a dual cab or an amp+cab.
     pub sub: u64,
     pub params: Vec<String>,
+    /// The `.hlx` names of the values after the parameters, as op 30 counts them with `29: false`.
+    pub extras: Vec<String>,
 }
 
 impl BlockAddress {
@@ -147,14 +149,15 @@ impl BlockAddress {
 
     /// What op 30 addresses for the `.hlx` parameter `name`.
     pub fn target(&self, name: &str) -> Option<Param> {
-        self.param(name).map(Param::Model)
+        let extra = || self.extras.iter().position(|e| e == name).map(|i| Param::Extra(i as u64));
+        self.param(name).map(Param::Model).or_else(extra)
     }
 
     /// The `.hlx` parameter op 30 addresses as `param`.
     pub fn name_of(&self, param: Param) -> Option<&str> {
         match param {
             Param::Model(i) => self.params.get(i as usize).map(String::as_str),
-            Param::Extra(_) => None,
+            Param::Extra(i) => self.extras.get(i as usize).map(String::as_str),
         }
     }
 }
@@ -178,7 +181,8 @@ impl DevicePreset {
             .map(|(i, placed)| {
                 let names = syms.get(placed.block.model).map(|s| s.parameters.clone()).unwrap_or_default();
                 let count = (placed.block.values.params as usize).min(names.len());
-                let address = BlockAddress { slot: placed.slot as u64, sub: 0, params: names[..count].to_vec() };
+                let extras = trails(&placed.block.values).map(|_| vec!["@trails".to_owned()]).unwrap_or_default();
+                let address = BlockAddress { slot: placed.slot as u64, sub: 0, params: names[..count].to_vec(), extras };
                 (format!("block{i}"), address)
             })
             .collect())
@@ -205,6 +209,9 @@ impl DevicePreset {
             let names = sym.map(|s| s.parameters.as_slice()).unwrap_or_default();
             for (name, value) in names.iter().zip(&block.values.values).take(block.values.params as usize) {
                 obj.insert(name.clone(), param_json(value));
+            }
+            if let Some(on) = trails(&block.values) {
+                obj.insert("@trails".into(), json!(on));
             }
             dsp0.insert(format!("block{i}"), obj.into());
         }
@@ -281,6 +288,15 @@ impl DevicePreset {
             "version": 6,
         });
         nx_hlx::Preset::from_slice(&serde_json::to_vec(&hlx).expect("JSON values serialise")).map_err(|e| e.to_string())
+    }
+}
+
+/// A delay's or reverb's trails: the switch stored right after its parameters (Ducked Delay
+/// holds 14 values for 13 parameters, Simple Delay 7 for 6) [inferred from Revv DM's hlx].
+fn trails(values: &Values) -> Option<bool> {
+    match values.values.get(usize::try_from(values.params).ok()?)? {
+        ParamValue::Bool(on) => Some(*on),
+        _ => None,
     }
 }
 
@@ -613,9 +629,30 @@ mod tests {
 
     #[test]
     fn an_address_names_its_parameters_both_ways() {
-        let address = BlockAddress { slot: 2, sub: 0, params: vec!["Drive".into(), "Bass".into()] };
+        let address = BlockAddress { slot: 2, sub: 0, params: vec!["Drive".into(), "Bass".into()], extras: Vec::new() };
         assert_eq!(address.target("Bass"), Some(Param::Model(1)));
         assert_eq!(address.name_of(Param::Model(0)), Some("Drive"));
         assert_eq!(address.name_of(Param::Model(2)), None);
+    }
+
+    #[test]
+    fn a_delays_and_reverbs_trails_come_from_the_value_after_their_parameters() {
+        let Some(syms) = helix_sym() else { return };
+        let converted = captured("02-select-preset-01C").to_hlx(&syms).unwrap();
+        let trails: Vec<Option<bool>> = converted.blocks().iter().map(|b| b.trails).collect();
+        let want: Vec<Option<bool>> = fixture().blocks().iter().map(|b| b.trails).collect();
+        assert_eq!(trails, want);
+        assert!(trails.contains(&Some(true)));
+    }
+
+    #[test]
+    fn trails_are_addressed_as_the_first_extra() {
+        let Some(syms) = helix_sym() else { return };
+        let preset = captured("02-select-preset-01C");
+        let addresses = preset.addresses(&syms).unwrap();
+        let delay = &addresses["block4"];
+        assert_eq!(delay.target("@trails"), Some(Param::Extra(0)));
+        assert_eq!(delay.name_of(Param::Extra(0)), Some("@trails"));
+        assert_eq!(addresses["block2"].target("@trails"), None, "the amp has no trails");
     }
 }
