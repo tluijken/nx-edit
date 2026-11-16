@@ -88,3 +88,19 @@ fn save_preset_is_the_message_hx_edit_sends() {
     let value = rmpv::decode::read_value(&mut &SAVE_03A[..]).unwrap();
     assert_eq!(Request::from_value(&value), Some((1009, request)));
 }
+
+#[test]
+fn set_extra_is_the_trails_switch_hx_edit_sends() {
+    let request = Request::SetExtra { block: 1, path: 0, index: 0, value: rmpv::Value::Boolean(true) };
+    let decoded = rmpv::decode::read_value(&mut &request.encode(1010)[..]).unwrap();
+    assert_eq!(decoded.to_string(), "{102: 1010, 100: 30, 101: {98: 1, 29: false, 26: 0, 28: 0, 119: true}}");
+    assert_eq!(Request::from_value(&decoded), Some((1010, request)));
+}
+
+#[test]
+fn set_param_carries_integers_and_booleans_as_they_are() {
+    let mic = Request::SetParam { block: 3, path: 0, param: 0, value: rmpv::Value::from(9) };
+    let decoded = rmpv::decode::read_value(&mut &mic.encode(1011)[..]).unwrap();
+    assert_eq!(decoded.to_string(), "{102: 1011, 100: 30, 101: {98: 3, 29: true, 26: 0, 28: 0, 119: 9}}");
+    assert_eq!(Request::from_value(&decoded), Some((1011, mic)));
+}

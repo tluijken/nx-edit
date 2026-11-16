@@ -144,6 +144,27 @@ impl BlockAddress {
     pub fn param(&self, name: &str) -> Option<u64> {
         self.params.iter().position(|p| p == name).map(|i| i as u64)
     }
+
+    /// What op 30 addresses for the `.hlx` parameter `name`.
+    pub fn target(&self, name: &str) -> Option<Param> {
+        self.param(name).map(Param::Model)
+    }
+
+    /// The `.hlx` parameter op 30 addresses as `param`.
+    pub fn name_of(&self, param: Param) -> Option<&str> {
+        match param {
+            Param::Model(i) => self.params.get(i as usize).map(String::as_str),
+            Param::Extra(_) => None,
+        }
+    }
+}
+
+/// What op 30's key 28 counts: the model's parameters (`29: true`), or the values the pedal keeps
+/// after them (`29: false`), the first of which is a delay's or reverb's trails switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Param {
+    Model(u64),
+    Extra(u64),
 }
 
 impl DevicePreset {
@@ -265,12 +286,28 @@ impl DevicePreset {
 
 fn param_json(value: &ParamValue) -> serde_json::Value {
     match value {
-        // Widening would write 0.26 as 0.25999999046325684. HX Edit's exports round to six significant
-        // digits, as printf's %g does: the pedal's 0.68000007 is exported as 0.680.
-        ParamValue::Float(f) => format!("{:.5e}", f).parse::<f64>().map_or(serde_json::Value::Null, |v| json!(v)),
+        ParamValue::Float(f) => float_json(f64::from(*f)),
         ParamValue::Int(i) => json!(i),
         ParamValue::Bool(b) => json!(b),
         ParamValue::Other(_) => serde_json::Value::Null,
+    }
+}
+
+/// Widening would write 0.26 as 0.25999999046325684. HX Edit's exports round to six significant
+/// digits, as printf's %g does: the pedal's 0.68000007 is exported as 0.680.
+fn float_json(f: f64) -> serde_json::Value {
+    format!("{f:.5e}").parse::<f64>().map_or(serde_json::Value::Null, |v| json!(v))
+}
+
+/// A value the pedal reported (op 30's key 119) as the `.hlx` holds it; `None` for anything but a
+/// number or a switch.
+pub fn json_value(value: &Value) -> Option<serde_json::Value> {
+    match value {
+        Value::F32(f) => Some(float_json(f64::from(*f))),
+        Value::F64(f) => Some(float_json(*f)),
+        Value::Integer(i) => i.as_i64().map(|i| json!(i)).or_else(|| i.as_u64().map(|u| json!(u))),
+        Value::Boolean(b) => Some(json!(b)),
+        _ => None,
     }
 }
 
@@ -564,5 +601,21 @@ mod tests {
         let Some(syms) = helix_sym() else { return };
         let amp = &tone(&nx_test().to_hlx(&syms).unwrap())["dsp0"]["block0"];
         assert_eq!((amp["Drive"].clone(), amp["Bass"].clone()), (json!(0.68), json!(0.26)));
+    }
+
+    #[test]
+    fn reported_values_become_json_of_their_own_type() {
+        assert_eq!(json_value(&Value::F32(0.68000007)), Some(json!(0.68)));
+        assert_eq!(json_value(&Value::from(9)), Some(json!(9)));
+        assert_eq!(json_value(&Value::Boolean(true)), Some(json!(true)));
+        assert_eq!(json_value(&Value::from("text")), None);
+    }
+
+    #[test]
+    fn an_address_names_its_parameters_both_ways() {
+        let address = BlockAddress { slot: 2, sub: 0, params: vec!["Drive".into(), "Bass".into()] };
+        assert_eq!(address.target("Bass"), Some(Param::Model(1)));
+        assert_eq!(address.name_of(Param::Model(0)), Some("Drive"));
+        assert_eq!(address.name_of(Param::Model(2)), None);
     }
 }

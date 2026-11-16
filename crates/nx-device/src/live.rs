@@ -17,7 +17,7 @@ use nx_proto::Request;
 use nx_session::{Error, Event, Session};
 use rmpv::Value;
 
-use crate::device::{DevicePreset, preset_from_session};
+use crate::device::{DevicePreset, Param, preset_from_session};
 
 /// Notifications after which the pedal's preset differs from what was read, so it is read again:
 /// preset switched (4) [seen, 02], snapshot loaded (46) [seen, 05], a block changed: enabled,
@@ -33,13 +33,13 @@ const BLOCK_SELECTED: u64 = 39;
 /// How often the worker looks at notifications while no command comes in.
 const POLL: Duration = Duration::from_millis(20);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Edit {
     generation: u64,
     slot: u64,
     sub: u64,
-    param: u64,
-    value: f32,
+    param: Param,
+    value: Value,
 }
 
 enum Command {
@@ -96,6 +96,12 @@ impl Live {
 
     /// Sets a float parameter, addressed as op 30 addresses it, on the preset of `generation`.
     pub fn set(&self, generation: u64, slot: u64, sub: u64, param: u64, value: f32) {
+        self.set_value(generation, slot, sub, Param::Model(param), Value::F32(value));
+    }
+
+    /// Sets any value op 30 can carry, a float, an integer or a switch, on the preset of
+    /// `generation`.
+    pub fn set_value(&self, generation: u64, slot: u64, sub: u64, param: Param, value: Value) {
         self.send(Command::Edit(Edit { generation, slot, sub, param, value }));
     }
 
@@ -157,19 +163,21 @@ impl Drop for Live {
 }
 
 /// A parameter value the pedal reported, addressed as op 30 addresses it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParamChange {
     pub slot: u64,
     pub sub: u64,
-    pub param: u64,
-    pub value: f64,
+    pub param: Param,
+    pub value: Value,
 }
 
 impl ParamChange {
     fn from_notification(data: &Value) -> Option<Self> {
         let inner = field(data, 106)?;
         let u = |k| field(inner, k).and_then(Value::as_u64);
-        Some(Self { slot: u(98)?, sub: u(26)?, param: u(28)?, value: field(inner, 119)?.as_f64()? })
+        let at = u(28)?;
+        let param = if field(inner, 29)?.as_bool()? { Param::Model(at) } else { Param::Extra(at) };
+        Some(Self { slot: u(98)?, sub: u(26)?, param, value: field(inner, 119)?.clone() })
     }
 }
 
@@ -298,7 +306,11 @@ impl Worker {
             self.session.request(Request::SelectBlock { block: edit.slot, path: edit.sub })?;
             self.selected = Some((edit.slot, edit.sub));
         }
-        self.session.request(Request::SetParam { block: edit.slot, path: edit.sub, param: edit.param, value: Value::F32(edit.value) })?;
+        let (block, path, value) = (edit.slot, edit.sub, edit.value);
+        self.session.request(match edit.param {
+            Param::Model(param) => Request::SetParam { block, path, param, value },
+            Param::Extra(index) => Request::SetExtra { block, path, index, value },
+        })?;
         Ok(())
     }
 
@@ -522,7 +534,7 @@ mod tests {
         let updates = updates_until_load(&live);
         let Update::Changed(before, change) = &updates[0] else { panic!("{updates:?}") };
         let Some(Update::Loaded(loaded)) = updates.last() else { panic!("{updates:?}") };
-        assert_eq!(*change, ParamChange { slot: 3, sub: 0, param: 1, value: 0.25 });
+        assert_eq!(*change, ParamChange { slot: 3, sub: 0, param: Param::Model(1), value: Value::F32(0.25) });
         assert!(loaded.generation > *before, "a change from before the switch carries the old generation");
     }
 
@@ -552,7 +564,7 @@ mod tests {
             updates.extend(live.updates());
             !updates.is_empty()
         });
-        assert!(matches!(updates[..], [Update::Changed(0, ParamChange { slot: 3, sub: 0, param: 1, .. })]), "{updates:?}");
+        assert!(matches!(updates[..], [Update::Changed(0, ParamChange { slot: 3, sub: 0, param: Param::Model(1), .. })]), "{updates:?}");
         assert!(sent(&device).is_empty(), "a reported change is not read back");
     }
 
@@ -626,5 +638,40 @@ mod tests {
         let live = Live::start(Session::connect(device.transport()).unwrap());
         switched_to(&device, 6);
         assert!(wait_for_load(&live).preset.modified);
+    }
+
+    #[test]
+    fn integers_booleans_and_extras_go_out_as_op_30_with_their_own_type() {
+        let device = device(echo);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        live.set_value(0, 3, 0, Param::Model(0), Value::from(9));
+        live.set_value(0, 1, 0, Param::Extra(0), Value::Boolean(true));
+        drop(live);
+        let sent = sent(&device);
+        assert!(sent.contains(&Request::SetParam { block: 3, path: 0, param: 0, value: Value::from(9) }));
+        assert!(sent.contains(&Request::SetExtra { block: 1, path: 0, index: 0, value: Value::Boolean(true) }));
+    }
+
+    #[test]
+    fn a_reported_trails_switch_is_passed_on_as_an_extra() {
+        let device = device(echo);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        let change = Value::Map(vec![
+            (98.into(), 1.into()),
+            (29.into(), false.into()),
+            (26.into(), 0.into()),
+            (28.into(), 0.into()),
+            (119.into(), true.into()),
+        ]);
+        device.notify(30, Value::Map(vec![(82.into(), 0.into()), (106.into(), change)]));
+        let mut changes = Vec::new();
+        wait_until("no change passed on", || {
+            changes.extend(live.updates().into_iter().filter_map(|u| match u {
+                Update::Changed(_, change) => Some(change),
+                _ => None,
+            }));
+            !changes.is_empty()
+        });
+        assert_eq!(changes, [ParamChange { slot: 1, sub: 0, param: Param::Extra(0), value: Value::Boolean(true) }]);
     }
 }

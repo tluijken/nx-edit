@@ -889,13 +889,14 @@ impl EditorApp {
     fn apply_change(&mut self, generation: u64, change: ParamChange) {
         let Some(connection) = self.connection.as_ref().filter(|c| c.generation == generation) else { return };
         let found = connection.addresses.iter().find(|(_, a)| a.slot == change.slot && a.sub == change.sub);
-        let Some((key, name)) = found.and_then(|(key, a)| Some((key.clone(), a.params.get(change.param as usize)?.clone()))) else { return };
+        let Some((key, name)) = found.and_then(|(key, a)| Some((key.clone(), a.name_of(change.param)?.to_owned()))) else { return };
+        let Some(value) = crate::device::json_value(&change.value) else { return };
         if self.drag.as_ref().is_some_and(|d| d.block == key && d.param == name) {
             return;
         }
         let target = if self.showing_file.is_some() { self.pedal_preset.as_mut() } else { self.preset.as_mut() };
         if let Some(preset) = target {
-            preset.set_param(&key, &name, serde_json::json!(change.value));
+            preset.set_param(&key, &name, value);
         }
         self.pedal_unsaved = true;
     }

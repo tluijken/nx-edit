@@ -18,6 +18,9 @@ pub enum Request {
     ReadGlobal { id: u64 },
     /// `block` counts slots from 1; `param` is the index in the model's parameter list.
     SetParam { block: u64, path: u64, param: u64, value: Value },
+    /// Op 30 with `29: false`: `index` counts the values after the model's parameters, the first
+    /// being a delay's or reverb's trails switch.
+    SetExtra { block: u64, path: u64, index: u64, value: Value },
     SetBlockEnabled { block: u64, enabled: bool },
     SelectBlock { block: u64, path: u64 },
     SelectSnapshot { index: u64 },
@@ -44,6 +47,11 @@ fn map(pairs: Vec<(u64, Value)>) -> Value {
     Value::Map(pairs.into_iter().map(|(k, v)| (int(k), v)).collect())
 }
 
+/// Op 30's arguments in HX Edit's key order; `29` says whether `28` counts the model's parameters.
+fn set(block: u64, model_param: bool, path: u64, at: u64, value: &Value) -> Value {
+    map(vec![(98, int(block)), (29, Value::Boolean(model_param)), (26, int(path)), (28, int(at)), (119, value.clone())])
+}
+
 fn get(m: &[(Value, Value)], key: u64) -> Option<&Value> {
     m.iter().find(|(k, _)| k.as_u64() == Some(key)).map(|(_, v)| v)
 }
@@ -55,7 +63,7 @@ impl Request {
             Self::PresetDocument => 22,
             Self::PresetInfo => 23,
             Self::ReadGlobal { .. } => 24,
-            Self::SetParam { .. } => 30,
+            Self::SetParam { .. } | Self::SetExtra { .. } => 30,
             Self::SetBlockEnabled { .. } => 41,
             Self::SelectBlock { .. } => 78,
             Self::SelectSnapshot { .. } => 88,
@@ -72,15 +80,8 @@ impl Request {
             Self::SelectPreset { setlist, index } => map(vec![(107, int(*setlist)), (108, int(*index))]),
             Self::PresetDocument | Self::PresetInfo => Value::Nil,
             Self::ReadGlobal { id } => map(vec![(118, int(*id))]),
-            // 29 true addresses the model's parameters; HX Edit sends false with 28: 0 for a delay's
-            // trails switch, apparently the first value after the parameters.
-            Self::SetParam { block, path, param, value } => map(vec![
-                (98, int(*block)),
-                (29, Value::Boolean(true)),
-                (26, int(*path)),
-                (28, int(*param)),
-                (119, value.clone()),
-            ]),
+            Self::SetParam { block, path, param, value } => set(*block, true, *path, *param, value),
+            Self::SetExtra { block, path, index, value } => set(*block, false, *path, *index, value),
             Self::SetBlockEnabled { block, enabled } => map(vec![(98, int(*block)), (59, Value::Boolean(*enabled))]),
             Self::SelectBlock { block, path } => map(vec![(98, int(*block)), (26, int(*path))]),
             Self::SelectSnapshot { index } => map(vec![(92, int(*index))]),
@@ -117,7 +118,13 @@ impl Request {
             22 if args.is_nil() => Some(Self::PresetDocument),
             23 if args.is_nil() => Some(Self::PresetInfo),
             24 => Some(Self::ReadGlobal { id: u(118)? }),
-            30 => Some(Self::SetParam { block: u(98)?, path: u(26)?, param: u(28)?, value: get(a, 119)?.clone() }),
+            30 => {
+                let (block, path, at, value) = (u(98)?, u(26)?, u(28)?, get(a, 119)?.clone());
+                Some(match get(a, 29)?.as_bool()? {
+                    true => Self::SetParam { block, path, param: at, value },
+                    false => Self::SetExtra { block, path, index: at, value },
+                })
+            }
             41 => Some(Self::SetBlockEnabled { block: u(98)?, enabled: get(a, 59)?.as_bool()? }),
             78 => Some(Self::SelectBlock { block: u(98)?, path: u(26)? }),
             88 => Some(Self::SelectSnapshot { index: u(92)? }),
