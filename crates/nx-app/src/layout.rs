@@ -84,26 +84,39 @@ pub fn slot_columns(lanes: &[Lane], branch: Option<Branch>) -> u8 {
 /// Pixels of vertical drag that sweep a knob through its whole range.
 pub const KNOB_TRAVEL: f32 = 200.0;
 
-/// A float parameter's value after dragging its knob `up` pixels, clamped to its range and rounded
-/// to hundredths of the range, the steps HX Edit sends. `None` for anything but a ranged float.
+/// HX Edit's parameter value types (`valueType` in its model files).
+const INTEGER: u8 = 0;
+const FLOAT: u8 = 1;
+const SWITCH: u8 = 2;
+
+/// A parameter's value after dragging its knob `up` pixels, clamped to its range: a float rounded
+/// to hundredths of the range, the steps HX Edit sends, an integer to whole steps. `None` for a
+/// switch, text or a parameter without a range.
 pub fn dragged(value: f64, def: &nx_catalog::ParamDef, up: f32) -> Option<f64> {
     let (lo, hi) = (def.min?, def.max?);
-    if def.value_type != 1 || hi <= lo {
+    if !matches!(def.value_type, INTEGER | FLOAT) || hi <= lo {
         return None;
     }
     let span = hi - lo;
     let raw = (value + f64::from(up / KNOB_TRAVEL) * span).clamp(lo, hi);
+    if def.value_type == INTEGER {
+        return Some(raw.round());
+    }
     Some(lo + ((raw - lo) / span * 100.0).round() / 100.0 * span)
 }
 
-/// A parameter value as HX Edit shows it: 0–1 knobs on a 0–10 scale, switches as On/Off.
-pub fn display_value(value: &serde_json::Value, def: Option<&nx_catalog::ParamDef>) -> String {
+/// A parameter value as HX Edit shows it: 0–1 knobs on a 0–10 scale, switches as On/Off, and a
+/// list's options by name, `options` naming them from the parameter's minimum on.
+pub fn display_value(value: &serde_json::Value, def: Option<&nx_catalog::ParamDef>, options: Option<&[String]>) -> String {
     match value {
         serde_json::Value::Bool(on) => (if *on { "On" } else { "Off" }).to_owned(),
         serde_json::Value::Number(n) => {
             let v = n.as_f64().unwrap_or_default();
-            let unit_range = def.is_some_and(|d| d.min == Some(0.0) && d.max == Some(1.0) && d.value_type == 1);
-            if unit_range {
+            let unit_range = def.is_some_and(|d| d.min == Some(0.0) && d.max == Some(1.0) && d.value_type == FLOAT);
+            let option = def.and_then(|d| d.min).and_then(|lo| options?.get(usize::try_from((v - lo) as i64).ok()?));
+            if let Some(name) = option {
+                name.clone()
+            } else if unit_range {
                 format!("{:.1}", v * 10.0)
             } else if v.fract() == 0.0 {
                 format!("{v:.0}")
@@ -112,6 +125,26 @@ pub fn display_value(value: &serde_json::Value, def: Option<&nx_catalog::ParamDe
             }
         }
         other => other.to_string(),
+    }
+}
+
+/// `v` as the `.hlx` holds a parameter of this kind: an integer, a switch or a float. The `.hlx`
+/// writes whole floats without a fraction, so the kind comes from the model, not from the value.
+pub fn typed_value(def: Option<&nx_catalog::ParamDef>, v: f64) -> serde_json::Value {
+    match def.map(|d| d.value_type) {
+        Some(INTEGER) => serde_json::json!(v.round() as i64),
+        Some(SWITCH) => serde_json::json!(v != 0.0),
+        _ => serde_json::json!(v),
+    }
+}
+
+/// A `.hlx` value as op 30 carries it: floats as f32, as HX Edit sends them.
+pub fn wire_value(value: &serde_json::Value) -> Option<rmpv::Value> {
+    match value {
+        serde_json::Value::Bool(b) => Some(rmpv::Value::Boolean(*b)),
+        serde_json::Value::Number(n) if n.is_f64() => Some(rmpv::Value::F32(n.as_f64()? as f32)),
+        serde_json::Value::Number(n) => n.as_i64().map(rmpv::Value::from),
+        _ => None,
     }
 }
 
@@ -225,7 +258,7 @@ mod tests {
     fn unit_range_values_show_on_a_ten_scale() {
         let cat = catalog();
         let drive = cat.model("HD2_AmpRevvGenRed").unwrap().params.iter().find(|p| p.id == "Drive").unwrap();
-        assert_eq!(display_value(&serde_json::json!(0.45), Some(drive)), "4.5");
+        assert_eq!(display_value(&serde_json::json!(0.45), Some(drive), None), "4.5");
     }
 
     fn param<'a>(cat: &'a Catalog, model: &str, id: &str) -> &'a nx_catalog::ParamDef {
@@ -257,26 +290,70 @@ mod tests {
     }
 
     #[test]
-    fn only_ranged_float_parameters_can_be_dragged() {
+    fn switches_and_unranged_parameters_are_not_dragged() {
         let mut def = param(&catalog(), "HD2_AmpRevvGenRed", "Drive").clone();
-        def.value_type = 0;
+        def.value_type = 2;
         assert_eq!(dragged(1.0, &def, 10.0), None);
         def.value_type = 1;
         def.max = None;
         assert_eq!(dragged(0.5, &def, 10.0), None);
     }
 
+    fn list(min: f64, max: f64) -> nx_catalog::ParamDef {
+        let mut def = param(&catalog(), "HD2_AmpRevvGenRed", "Drive").clone();
+        (def.value_type, def.min, def.max) = (0, Some(min), Some(max));
+        def
+    }
+
+    #[test]
+    fn an_integer_parameter_drags_in_whole_steps() {
+        let mic = list(0.0, 11.0);
+        assert_eq!(dragged(3.0, &mic, KNOB_TRAVEL * 2.0 / 11.0), Some(5.0));
+        assert_eq!(dragged(3.0, &mic, 1.0), Some(3.0));
+        assert_eq!(dragged(3.0, &mic, -KNOB_TRAVEL), Some(0.0));
+    }
+
+    #[test]
+    fn a_list_shows_the_name_of_its_option() {
+        let mic = list(0.0, 11.0);
+        let names: Vec<String> = (0..12).map(|i| format!("Mic {i}")).collect();
+        assert_eq!(display_value(&serde_json::json!(8), Some(&mic), Some(&names)), "Mic 8");
+        let sync = list(1.0, 3.0);
+        let notes = ["1/1".to_owned(), "1/2".into(), "1/4".into()];
+        assert_eq!(display_value(&serde_json::json!(3), Some(&sync), Some(&notes)), "1/4");
+        assert_eq!(display_value(&serde_json::json!(9), Some(&sync), Some(&notes)), "9");
+    }
+
+    #[test]
+    fn a_value_is_written_with_its_parameters_type() {
+        let mut def = list(0.0, 11.0);
+        assert_eq!(typed_value(Some(&def), 9.0), serde_json::json!(9));
+        def.value_type = 2;
+        assert_eq!(typed_value(Some(&def), 1.0), serde_json::json!(true));
+        def.value_type = 1;
+        assert!(typed_value(Some(&def), 0.0).is_f64(), "a float stays a float at a whole value");
+        assert!(typed_value(None, 0.5).is_f64());
+    }
+
+    #[test]
+    fn values_go_to_the_pedal_as_their_own_messagepack_type() {
+        assert_eq!(wire_value(&serde_json::json!(9)), Some(rmpv::Value::from(9)));
+        assert_eq!(wire_value(&serde_json::json!(true)), Some(rmpv::Value::Boolean(true)));
+        assert_eq!(wire_value(&serde_json::json!(0.5)), Some(rmpv::Value::F32(0.5)));
+        assert_eq!(wire_value(&serde_json::json!("x")), None);
+    }
+
     #[test]
     fn switches_show_on_and_off() {
-        assert_eq!(display_value(&serde_json::json!(true), None), "On");
-        assert_eq!(display_value(&serde_json::json!(false), None), "Off");
+        assert_eq!(display_value(&serde_json::json!(true), None, None), "On");
+        assert_eq!(display_value(&serde_json::json!(false), None, None), "Off");
     }
 
     #[test]
     fn other_numbers_show_as_stored() {
-        assert_eq!(display_value(&serde_json::json!(8500.0), None), "8500");
-        assert_eq!(display_value(&serde_json::json!(-1.5), None), "-1.5");
-        assert_eq!(display_value(&serde_json::json!(2), None), "2");
+        assert_eq!(display_value(&serde_json::json!(8500.0), None, None), "8500");
+        assert_eq!(display_value(&serde_json::json!(-1.5), None, None), "-1.5");
+        assert_eq!(display_value(&serde_json::json!(2), None, None), "2");
     }
 
     #[test]

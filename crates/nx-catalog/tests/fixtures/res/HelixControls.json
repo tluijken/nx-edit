@@ -1,0 +1,5 @@
+{
+  "off_on": { "isDiscrete": true, "controlType": "segmented", "format": ["Off", "On"] },
+  "test_mics": { "isDiscrete": true, "format": ["Mic One", "Mic Two", "Mic Three"] },
+  "generic_knob": { "isDiscrete": false, "formatUnits": "" }
+}

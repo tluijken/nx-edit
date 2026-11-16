@@ -3,6 +3,7 @@
 //! bundled with nx-edit.
 
 mod categories;
+mod controls;
 mod import;
 mod models;
 mod symbols;
@@ -31,6 +32,7 @@ pub enum CatalogError {
 pub struct Catalog {
     models: HashMap<String, ModelDef>,
     categories: Vec<Category>,
+    options: HashMap<String, Vec<String>>,
 }
 
 impl Catalog {
@@ -42,7 +44,8 @@ impl Catalog {
             }
         }
         let categories = categories::read_categories(&res_dir.join("HX_ModelCatalog.json"))?;
-        Ok(Self { models, categories })
+        let options = controls::read_options(&res_dir.join("HelixControls.json"))?;
+        Ok(Self { models, categories, options })
     }
 
     pub fn model(&self, id: &str) -> Option<&ModelDef> {
@@ -51,6 +54,12 @@ impl Catalog {
 
     pub fn categories(&self) -> &[Category] {
         &self.categories
+    }
+
+    /// The names of a discrete control's options, by a parameter's display type: index 0 names the
+    /// parameter's minimum.
+    pub fn options(&self, display_type: &str) -> Option<&[String]> {
+        self.options.get(display_type).map(Vec::as_slice)
     }
 
     pub fn len(&self) -> usize {

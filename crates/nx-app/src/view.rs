@@ -10,7 +10,7 @@ use nx_hlx::Preset;
 
 use crate::device::BlockAddress;
 use crate::history::{History, Turn};
-use crate::layout::{Branch, Lane, Tile, branch, display_value, dragged, lanes, slot_columns};
+use crate::layout::{Branch, Lane, Tile, branch, display_value, dragged, lanes, slot_columns, typed_value, wire_value};
 use crate::live::{Live, Loaded, ParamChange, Update};
 use crate::theme;
 
@@ -378,13 +378,21 @@ impl EditorApp {
                     ui.spacing_mut().item_spacing.x = GAP;
                     for (name, value) in row {
                         let def = model.as_ref().and_then(|m| m.params.iter().find(|p| &p.id == name));
-                        let current = value.as_f64().filter(|_| value.is_f64());
-                        let live = match (def, current) {
-                            (Some(d), Some(v)) if file || address.as_ref().and_then(|a| a.param(name)).is_some() => dragged(v, d, 0.0).map(|_| (d, v)),
+                        let options = def.and_then(|d| self.catalog.as_ref()?.options(d.display_type.as_deref()?));
+                        let reachable = file || address.as_ref().and_then(|a| a.target(name)).is_some();
+                        let switch = reachable && def.is_some_and(|d| d.value_type == 2) && value.is_boolean();
+                        let live = match (def, value.as_f64()) {
+                            (Some(d), Some(v)) if reachable => dragged(v, d, 0.0).map(|_| (d, v)),
                             _ => None,
                         };
                         let label = def.map_or(name.as_str(), |d| d.name.as_str());
-                        let response = knob_card(ui, width, label, &display_value(value, def), knob_fraction(value, def), color, live.is_some());
+                        let shown = display_value(value, def, options);
+                        let response = knob_card(ui, width, label, &shown, knob_fraction(value, def), color, live.is_some(), switch);
+                        if switch && response.clicked() {
+                            let before = f64::from(u8::from(value.as_bool() == Some(true)));
+                            turned = Some((name.clone(), 1.0 - before));
+                            self.history.push(Turn { block: key.clone(), param: name.clone(), before, after: 1.0 - before });
+                        }
                         let Some((def, v)) = live else { continue };
                         if response.drag_started() {
                             self.drag = Some(Drag { block: key.clone(), param: name.clone(), start: v, up: 0.0 });
@@ -415,11 +423,19 @@ impl EditorApp {
         self.set_param(&key, &name, value);
     }
 
+    /// The model's definition of a parameter of a block in the preset shown.
+    fn param_def(&self, key: &str, name: &str) -> Option<&nx_catalog::ParamDef> {
+        let model = self.preset.as_ref()?.blocks().into_iter().find(|b| b.key == key)?.model;
+        self.catalog.as_ref()?.model(&model)?.params.iter().find(|p| p.id == name)
+    }
+
     /// Sets a parameter of the preset shown: on the pedal too for the pedal's preset, until saved
-    /// for a library file.
+    /// for a library file. `value` is a float, a whole number or 0/1, and is written with the
+    /// parameter's own type.
     fn set_param(&mut self, key: &str, name: &str, value: f64) {
+        let typed = typed_value(self.param_def(key, name), value);
         if let Some(preset) = self.preset.as_mut() {
-            preset.set_param(key, name, serde_json::json!(value));
+            preset.set_param(key, name, typed.clone());
         }
         if self.showing_file.is_some() {
             self.unsaved = true;
@@ -427,9 +443,10 @@ impl EditorApp {
         }
         if let Some(connection) = self.live()
             && let Some(address) = connection.addresses.get(key)
-            && let Some(param) = address.param(name)
+            && let Some(param) = address.target(name)
+            && let Some(wire) = wire_value(&typed)
         {
-            connection.live.set(connection.generation, address.slot, address.sub, param, value as f32);
+            connection.live.set_value(connection.generation, address.slot, address.sub, param, wire);
             self.pedal_unsaved = true;
         }
     }
@@ -1251,11 +1268,18 @@ fn knob_fraction(value: &serde_json::Value, def: Option<&nx_catalog::ParamDef>) 
 }
 
 /// A parameter as a card with an arc knob; a live one is dragged up and down to turn it.
-fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, color: Color32, live: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(width, KNOB_CARD.y), if live { Sense::drag() } else { Sense::hover() });
-    let response = if live { response.on_hover_cursor(egui::CursorIcon::ResizeVertical) } else { response };
+/// A parameter's card: dragged up and down when `live`, clicked on and off when a `switch`.
+#[allow(clippy::too_many_arguments)]
+fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, color: Color32, live: bool, switch: bool) -> egui::Response {
+    let sense = if live { Sense::drag() } else if switch { Sense::click() } else { Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, KNOB_CARD.y), sense);
+    let response = match (live, switch) {
+        (true, _) => response.on_hover_cursor(egui::CursorIcon::ResizeVertical),
+        (false, true) => response.on_hover_cursor(egui::CursorIcon::PointingHand),
+        _ => response,
+    };
     let painter = ui.painter();
-    let hot = live && (response.hovered() || response.dragged());
+    let hot = (live || switch) && (response.hovered() || response.dragged());
     painter.rect_filled(rect, CornerRadius::same(14), if hot { theme::RAISED_HI } else { theme::RAISED });
     let center = rect.center_top() + vec2(0.0, 54.0);
     let arc = |to: f32| -> Vec<Pos2> {
@@ -1594,6 +1618,37 @@ mod pedal_tests {
         app.leave(Leave::Select(5));
         app.decide(false);
         assert_eq!(sent_once(&device, save_or_select, 1), [Request::SelectPreset { setlist: 0, index: 5 }]);
+    }
+
+    fn real_catalog() -> Option<Catalog> {
+        let dir = std::env::var_os("NX_HXEDIT_RES").map(PathBuf::from).unwrap_or_else(nx_catalog::default_res_dir);
+        Catalog::load(&dir).ok()
+    }
+
+    #[test]
+    fn a_list_parameter_goes_to_the_pedal_as_an_integer() {
+        let (Some((mut app, device)), Some(catalog)) = (on_nx_test(false), real_catalog()) else { return };
+        app.catalog = Some(catalog);
+        app.set_param("block1", "Mic", 9.0);
+        let sent = sent_once(&device, |r| matches!(r, Request::SetParam { .. }), 1);
+        assert_eq!(sent, [Request::SetParam { block: 3, path: 0, param: 0, value: rmpv::Value::from(9) }]);
+        let mic = app.preset.as_ref().unwrap().blocks().into_iter().find(|b| b.key == "block1").unwrap().params.into_iter().find(|(k, _)| k == "Mic").unwrap().1;
+        assert_eq!(mic, serde_json::json!(9));
+    }
+
+    #[test]
+    fn a_switch_in_a_library_file_stays_a_switch() {
+        let Some(catalog) = real_catalog() else { return };
+        let dir = std::env::temp_dir().join(format!("nx-view-{}-switch", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Revv_DM.hlx");
+        std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-hlx/tests/fixtures/Revv_DM.hlx"), &file).unwrap();
+        let mut app = EditorApp::new(None, Some(catalog), String::new(), None);
+        app.open_file(file);
+        app.set_param("block4", "TempoSync1", 1.0);
+        let sync = app.preset.as_ref().unwrap().blocks().into_iter().find(|b| b.key == "block4").unwrap().params.into_iter().find(|(k, _)| k == "TempoSync1").unwrap().1;
+        assert_eq!(sync, serde_json::json!(true));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

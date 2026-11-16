@@ -111,3 +111,25 @@ fn imports_from_installer() {
     assert!(catalog.len() >= 681);
     std::fs::remove_dir_all(&dest).unwrap();
 }
+
+#[test]
+fn discrete_controls_name_their_options() {
+    let catalog = Catalog::load(&fixture_dir()).unwrap();
+    assert_eq!(catalog.options("test_mics"), Some(&["Mic One".to_owned(), "Mic Two".into(), "Mic Three".into()][..]));
+    assert_eq!(catalog.options("generic_knob"), None);
+    assert_eq!(catalog.options("unknown"), None);
+}
+
+#[test]
+fn a_res_folder_without_controls_still_loads() {
+    let dir = std::env::temp_dir().join(format!("nx-catalog-{}-no-controls", std::process::id()));
+    _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in ["amp.models", "HX_ModelCatalog.json"] {
+        std::fs::copy(fixture_dir().join(name), dir.join(name)).unwrap();
+    }
+    let catalog = Catalog::load(&dir).unwrap();
+    assert!(catalog.model("HD2_AmpRevvGenRed").is_some());
+    assert_eq!(catalog.options("off_on"), None);
+    std::fs::remove_dir_all(dir).unwrap();
+}
