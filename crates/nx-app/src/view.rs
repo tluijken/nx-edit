@@ -388,7 +388,7 @@ impl EditorApp {
                         if let Some((def, Control::Buttons(names) | Control::List(names))) = &choice {
                             let list = matches!(choice, Some((_, Control::List(_))));
                             let card = ChoiceCard { width, label, names, current: chosen(value, def), color, enabled: reachable, list };
-                            if let Some(index) = card.show(ui, (&key, name)) {
+                            if let Some(index) = card.show(ui) {
                                 let before = value.as_bool().map_or_else(|| value.as_f64().unwrap_or_default(), |on| f64::from(u8::from(on)));
                                 let after = choice_value(index, def);
                                 if (after - before).abs() > 1e-9 {
@@ -1259,6 +1259,12 @@ fn cloud_icon(painter: &egui::Painter, center: Pos2, color: Color32) {
     painter.line_segment([center + vec2(-4.0, 6.0), center + vec2(5.5, 6.0)], stroke);
 }
 
+fn chevron(painter: &egui::Painter, center: Pos2, color: Color32) {
+    let stroke = Stroke::new(2.0, color);
+    painter.line_segment([center + vec2(-5.0, -2.5), center + vec2(0.0, 2.5)], stroke);
+    painter.line_segment([center + vec2(0.0, 2.5), center + vec2(5.0, -2.5)], stroke);
+}
+
 fn pulse_icon(painter: &egui::Painter, center: Pos2, color: Color32) {
     let p = |x: f32, y: f32| center + vec2(x - 12.0, y - 12.0) * 0.85;
     let points = vec![p(2.0, 12.0), p(6.0, 12.0), p(8.0, 7.0), p(12.0, 17.0), p(15.0, 10.0), p(17.0, 12.0), p(22.0, 12.0)];
@@ -1305,35 +1311,115 @@ struct ChoiceCard<'a> {
 }
 
 impl ChoiceCard<'_> {
-    /// Draws the card; the option picked, if one was. `id` keeps a drop-down apart from the others.
-    fn show(&self, ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug) -> Option<usize> {
+    /// Draws the card; the option picked, if one was.
+    fn show(&self, ui: &mut Ui) -> Option<usize> {
+        if self.list {
+            return self.show_list(ui);
+        }
+        if self.names == ["Off", "On"] {
+            return self.show_switch(ui);
+        }
         let (rect, _) = ui.allocate_exact_size(vec2(self.width, KNOB_CARD.y), Sense::hover());
         ui.painter().rect_filled(rect, CornerRadius::same(14), theme::RAISED);
         ui.painter().text(rect.center_top() + vec2(0.0, 104.0), Align2::CENTER_CENTER, self.label, theme::regular(13.0), theme::TEXT_MID);
-        let area = Rect::from_min_size(rect.left_top() + vec2(10.0, 12.0), vec2(self.width - 20.0, 78.0));
+        let count = self.names.len().max(1);
+        // Two options share one pill side by side; more are stacked so their names fit the card.
+        let (cols, rows) = if count <= 2 { (count, 1) } else { (1, count) };
+        let height = if rows == 1 { 30.0 } else { (78.0 / rows as f32 - 3.0).min(26.0) };
+        let top = rect.top() + 12.0 + (78.0 - (height + 3.0) * rows as f32 + 3.0) / 2.0;
+        let width = (self.width - 20.0) / cols as f32;
         let mut picked = None;
-        ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-            ui.add_enabled_ui(self.enabled, |ui| {
-                if self.list {
-                    ui.add_space(22.0);
-                    let shown = self.current.and_then(|i| self.names.get(i)).map_or("?", String::as_str);
-                    let combo = egui::ComboBox::from_id_salt(id).selected_text(shown).width(area.width()).show_ui(ui, |ui| {
-                        for (i, name) in self.names.iter().enumerate() {
-                            if ui.selectable_label(self.current == Some(i), name).clicked() {
-                                picked = Some(i);
-                            }
-                        }
-                    });
-                    combo.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, self.enabled, self.label));
-                    return;
-                }
-                let height = (area.height() / self.names.len().max(2) as f32 - 4.0).min(30.0);
-                ui.spacing_mut().item_spacing.y = 4.0;
+        for (i, name) in self.names.iter().enumerate() {
+            let (col, row) = (i % cols, i / cols);
+            let cell = Rect::from_min_size(pos2(rect.left() + 10.0 + width * col as f32, top + (height + 3.0) * row as f32), vec2(width, height));
+            let sense = if self.enabled { Sense::click() } else { Sense::hover() };
+            let response = ui.interact(cell, ui.next_auto_id().with(i), sense);
+            let on = self.current == Some(i);
+            response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, self.enabled, on, name));
+            let radius = if cols == 1 {
+                CornerRadius::same(8)
+            } else if col == 0 {
+                CornerRadius { nw: 15, sw: 15, ne: 0, se: 0 }
+            } else {
+                CornerRadius { nw: 0, sw: 0, ne: 15, se: 15 }
+            };
+            let fill = if on {
+                self.color
+            } else if self.enabled && response.hovered() {
+                theme::with_alpha(self.color, 0x40)
+            } else {
+                theme::RAISED_HI
+            };
+            ui.painter().rect_filled(cell, radius, fill);
+            let text = if on { theme::BG } else { theme::TEXT_MID };
+            let galley = ui.painter().layout_no_wrap(name.clone(), theme::semibold(12.0), text);
+            let font = if galley.size().x > cell.width() - 6.0 { theme::semibold(10.0) } else { theme::semibold(12.0) };
+            ui.painter().text(cell.center(), Align2::CENTER_CENTER, name, font, text);
+            if response.clicked() && !on {
+                picked = Some(i);
+            }
+        }
+        picked
+    }
+
+    /// An off/on parameter as a switch, its state written under it the way a knob shows its value;
+    /// a click anywhere on the card flips it.
+    fn show_switch(&self, ui: &mut Ui) -> Option<usize> {
+        let sense = if self.enabled { Sense::click() } else { Sense::hover() };
+        let (rect, response) = ui.allocate_exact_size(vec2(self.width, KNOB_CARD.y), sense);
+        let on = self.current == Some(1);
+        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, self.enabled, on, self.label));
+        let painter = ui.painter();
+        let hot = self.enabled && response.hovered();
+        painter.rect_filled(rect, CornerRadius::same(14), if hot { theme::RAISED_HI } else { theme::RAISED });
+        let track = Rect::from_center_size(rect.center_top() + vec2(0.0, 52.0), vec2(60.0, 32.0));
+        painter.rect_filled(track, CornerRadius::same(16), if on { self.color } else { theme::BG });
+        let knob = if on { track.right_center() - vec2(16.0, 0.0) } else { track.left_center() + vec2(16.0, 0.0) };
+        painter.circle_filled(knob, 12.0, if on { theme::TEXT } else { theme::TEXT_DIM });
+        painter.text(rect.center_top() + vec2(0.0, 104.0), Align2::CENTER_CENTER, self.label, theme::regular(13.0), theme::TEXT_MID);
+        painter.text(rect.center_top() + vec2(0.0, 123.0), Align2::CENTER_CENTER, if on { "On" } else { "Off" }, mono(15.0), theme::TEXT);
+        (response.clicked()).then_some(usize::from(!on))
+    }
+
+    /// The card shows the current option the way a knob shows its value; a click opens the options
+    /// in a list styled like the preset list.
+    fn show_list(&self, ui: &mut Ui) -> Option<usize> {
+        let sense = if self.enabled { Sense::click() } else { Sense::hover() };
+        let (rect, response) = ui.allocate_exact_size(vec2(self.width, KNOB_CARD.y), sense);
+        let response = if self.enabled { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, self.enabled, self.label));
+        let painter = ui.painter();
+        let hot = self.enabled && response.hovered();
+        painter.rect_filled(rect, CornerRadius::same(14), if hot { theme::RAISED_HI } else { theme::RAISED });
+        let shown = self.current.and_then(|i| self.names.get(i)).map_or("?", String::as_str);
+        let color = if self.enabled { theme::TEXT } else { theme::TEXT_DIM };
+        let galley = painter.layout(shown.to_owned(), theme::semibold(15.0), color, rect.width() - 20.0);
+        painter.galley(rect.center_top() + vec2(-galley.size().x / 2.0, 50.0 - galley.size().y / 2.0), galley, color);
+        chevron(painter, rect.center_top() + vec2(0.0, 80.0), if hot { self.color } else { theme::TEXT_DIM });
+        painter.text(rect.center_top() + vec2(0.0, 104.0), Align2::CENTER_CENTER, self.label, theme::regular(13.0), theme::TEXT_MID);
+        let frame = Frame::new()
+            .fill(theme::PANEL)
+            .corner_radius(CornerRadius::same(12))
+            .stroke(Stroke::new(1.0, theme::RAISED_HI))
+            .inner_margin(Margin::same(6));
+        let mut picked = None;
+        let popup = egui::Popup::menu(&response).align(egui::RectAlign::BOTTOM_START).align_alternatives(&[egui::RectAlign::TOP_START]);
+        popup.width(rect.width().max(200.0)).gap(4.0).frame(frame).show(|ui| {
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
                 for (i, name) in self.names.iter().enumerate() {
-                    let on = self.current == Some(i);
-                    let text = RichText::new(name).font(theme::semibold(12.0)).color(if on { theme::BG } else { theme::TEXT_MID });
-                    let button = egui::Button::new(text).fill(if on { self.color } else { theme::RAISED_HI }).corner_radius(CornerRadius::same(8));
-                    if ui.add_sized(vec2(area.width(), height), button).clicked() && !on {
+                    let current = self.current == Some(i);
+                    let (row, clicked) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+                    clicked.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, current, name));
+                    if current {
+                        ui.painter().rect_filled(row, CornerRadius::same(8), theme::RAISED_HI);
+                    } else if clicked.hovered() {
+                        ui.painter().rect_filled(row, CornerRadius::same(8), theme::RAISED);
+                    }
+                    let font = if current { theme::semibold(14.0) } else { theme::regular(14.0) };
+                    let color = if current { theme::ACCENT } else { theme::TEXT_MID };
+                    ui.painter().text(row.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, name, font, color);
+                    if clicked.clicked() && !current {
                         picked = Some(i);
                     }
                 }
@@ -1590,6 +1676,15 @@ mod tests {
         harness.get_by_label("Gating").click();
         harness.run();
         assert_eq!(param_of(&harness, "block4", "DynType"), serde_json::json!(true));
+    }
+
+    #[test]
+    fn an_off_on_switch_flips_with_a_click() {
+        let file = library_file("switch-toggle");
+        let Some(mut harness) = editor_with_catalog(&file, "block4") else { return };
+        harness.get_by_label("Tempo Sync").click();
+        harness.run();
+        assert_eq!(param_of(&harness, "block4", "TempoSync1"), serde_json::json!(true));
     }
 
     #[test]
