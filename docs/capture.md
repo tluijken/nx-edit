@@ -101,3 +101,17 @@ Not captured:
 
 nx-edit's conversion of `18`'s document is compared with `18-export-preset.hlx` field by field in
 [protocol.md](protocol.md), "Compared with HX Edit's export".
+
+## Next session: imports for the engine table
+
+Parked work: "Assign to a place" (branch `feat/assign`, rebased on master 2026-11-17) needs an
+`.hlx` to document encoder, and that needs each block type's engine number, which only HX Edit's
+own writes show (protocol.md, "A document as HX Edit writes it"). Plan:
+
+1. Make or download a few `.hlx` presets that together hold every block category: modulation,
+   dynamics, wah, pitch/synth, filter, volume/pan, preamp, amp+cab, IR, looper and send/return,
+   also mono and stereo variants of one effect.
+2. Import each with HX Edit to an empty place (03C onward), one capture per import, and keep the
+   `.hlx` next to its capture. Op 8 then carries HX Edit's document for that file.
+3. Read each document's engines against the file's `@type`, and add the pairs as fixtures for the
+   encoder's byte-for-byte tests.

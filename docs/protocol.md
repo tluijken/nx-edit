@@ -399,6 +399,35 @@ key `110` with the same envelope and section table as op 22 returns [seen, `11`,
 Edit's own documents always carry a correct table, so whether the device checks it is still
 untested.
 
+### A document as HX Edit writes it [seen, `19` and `30`]
+
+`19` holds the 2880-byte document HX Edit sent with op 8 for `Revv_Home.hlx`, and `30` the
+2762-byte document the pedal returned for that place (op 22). The pedal accepts HX Edit's form and
+normalises it when it stores the preset. Compared key by key, HX Edit's form differs in:
+
+- `7.37`: HX Edit's own build (`v3.60-56-g73ae345`), not the firmware's;
+- key 5 also holds 111-116 (1.0 each), 380 and 381 (2), 252 and 253 (0), which the pedal drops;
+- each snapshot's key 1 has 13 entries instead of 11, and the first element of every slot state
+  (`3.N.0`) is nil instead of false, which `Document::decode` rejects today;
+- the junctions' `before-slot` is 7 and 9 for an unused path B, where the pedal stores 0;
+- controller assignments come in another order.
+
+Every other value is the same. That makes `19` the byte-for-byte target for an `.hlx` to document
+encoder, which "Assign to a place" (branch `feat/assign`) needs before its Replace button can work.
+
+A block's engine (slot key 9) is not in any of HX Edit's data files (`Helix.sym`, `*.models`,
+`HX_ModelCatalog.json`); in `19` it follows the `.hlx` `@type` [seen for these only]:
+
+| `@type` | blocks | engine |
+|---|---|---|
+| 0 | Scream 808, Parametric EQ | 1 |
+| 1 | amp | 17 |
+| 2 | cab | 31 |
+| 7 | delay, reverb | 8 |
+
+The send block of Revv DM has engine 25; its `@type` has not been seen. No rule fits these pairs,
+so other block types need captures before an encoder may write them.
+
 The setters never change what the device wrote: `set_param` keeps a value's type and encoding (an
 integer stays an integer of the same width, an f32 stays f32) and rejects a value that type cannot
 hold exactly, a boolean for a number or the other way round, with `DocError::Value`. The other
@@ -535,6 +564,9 @@ retried.
 ## Open questions
 
 - Whether the device checks the section table of a document written with op 21 or op 8.
+- The engine (slot key 9) of every `@type` other than 0, 1, 2 and 7 (modulation, dynamics, wah,
+  pitch, filter, volume/pan, preamp, amp+cab, IR, looper, send/return); see "A document as HX Edit
+  writes it". Parked with `feat/assign` until a capture session fills the table.
 - Op 109 in a backup (three calls per id for 372 ids, keys 64, 105, 106), the `116` word of
   notification 5, list keys 123-125, and globals 96-99.
 - Why op 255 took a second before the export in `18` and two milliseconds everywhere else.
