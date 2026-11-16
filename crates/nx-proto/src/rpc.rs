@@ -68,7 +68,8 @@ impl Request {
             Self::SelectPreset { setlist, index } => map(vec![(107, int(*setlist)), (108, int(*index))]),
             Self::PresetDocument | Self::PresetInfo => Value::Nil,
             Self::ReadGlobal { id } => map(vec![(118, int(*id))]),
-            // 29 is always true in HX Edit's captures; its meaning is unknown.
+            // 29 true addresses the model's parameters; HX Edit sends false with 28: 0 for a delay's
+            // trails switch, apparently the first value after the parameters.
             Self::SetParam { block, path, param, value } => map(vec![
                 (98, int(*block)),
                 (29, Value::Boolean(true)),
