@@ -1,7 +1,8 @@
 # HX Stomp editor protocol
 
 What nx-edit knows about the protocol on interface `MI_00`, from its own captures
-(`local/captures/`, kept out of git; session 1: HX Edit 3.82, HX Stomp firmware 3.71.0).
+(`local/captures/`, kept out of git; HX Edit 3.82, HX Stomp firmware 3.71.0; session 1 is `01`-`06`,
+session 2 of 2026-11-16 is `07`-`24`, see [capture.md](capture.md)).
 tonepush's PROTOCOL.md was used as a map; every statement here is checked against our captures.
 Tags: **[seen]** observed in our captures and covered by a test; **[inferred]** consistent with
 our captures but not proven; **[map]** from PROTOCOL.md, not yet seen by us.
@@ -28,21 +29,31 @@ Channel frame body (format 0x18):
 2  u8      0
 3  u8      kind: 0x04 data, 0x08 ack, 0x0c data+ack, 0x10 keep-alive, 0x02 close  [seen]
 4  u32 LE  acknowledgement: receiver's base + payload bytes received  [seen]
-8  payload (data kinds only; at most 256 bytes per frame)
+8  payload (data kinds only)
 ```
+
+The device's frames carry at most 256 payload bytes. HX Edit's carry up to 496: in `19` it sends a
+2.9 KB message as 496 + 16, 496 + 16, ... so that each pair fills the 512-byte window exactly (see
+"Acknowledgements") [seen].
 
 The HELLO body (format 0x28) is laid out the same way for its first four bytes (seq 0, kind 0x02),
 followed by two words; see "Session".
 
-Implemented in `nx-proto::frame`; `every_capture_decodes_cleanly` walks all 1607 transfers.
+Implemented in `nx-proto::frame`; `every_capture_decodes_cleanly` walks every transfer of every
+capture, session 1 (1607 transfers; the counts below are session 1's) and session 2 alike.
 
 ## Channels [seen]
 
 | host id | device id | service opened | role |
 |---|---|---|---|
-| `0x1001` | `0x03ef` | 5, later 2 | device info (`"P33Main"` reply) |
-| `0x1080` | `0x03ed` | 6 | RPC: all requests below |
+| `0x1001` | `0x03ef` | 5, later 2 | device info (`"P33Main"` reply), then the librarian |
+| `0x1080` | `0x03ed` | 6 | RPC: the editing requests below |
 | `0x1002` | `0x03f0` | 4 | notifications from the device |
+
+The device ids are fixed; the host ids are HX Edit's choice and can change on every connect
+[seen]: session 1, `07`, `25` and later use the ids above, while the connects in between used
+`0x1003` (service 6), `0x1004` (service 2) and `0x1005` (service 4), within one run of HX Edit as
+well. The device accepts either; the service number, not the host id, says what a channel is for.
 
 Opening, per channel (`06-reconnect`, order 1001 → 1080 → 1002 → 1001):
 
@@ -78,15 +89,74 @@ completes later with notification 20 `{102: txn, 103: status, 104: result}` [see
 
 | op | meaning | args | reply | capture |
 |---|---|---|---|---|
-| 20 | select preset | `107` setlist, `108` index | status 1 | 02 |
+| 20 | select preset | `107` setlist, `108` index | status 1 | 02, 07 |
+| 21 | write the current preset document | `110` document (str, as op 22 returns it) | status 1; notification 20, then 21 | 11 |
 | 22 | read current preset document | nil | document (str), see "Preset document" | 02, 05, 06 |
 | 23 | current preset info | nil | `107`, `108`, `109` name (NUL-terminated), `117` modified, `83`, `92` snapshot | 02, 05 |
-| 24 | read global setting | `118` id | `{118: id, 119: value}` | 05 |
-| 30 | set parameter | `98` block, `26` sub-block (not the path, see below), `28` param index, `29` true, `119` value | status 0, echoes args | 03 |
+| 24 | read global setting | `118` id | `{118: id, 119: value}` | 05, 22 |
+| 25 | write global setting | `118` id, `119` value | status 0, nil; notification 22 | 22 |
+| 28 | remove block | `98` slot | status 0, nil; notification 49 subtype 14 | 14 |
+| 30 | set parameter | `98` block, `26` sub-block (not the path, see below), `28` param index, `29` true, `119` value | status 0, echoes args | 03, 12, 13 |
+| 39 | insert block into an empty slot | `98` slot, `99` slot body `{19: 6, 20: {24: {23: false, 25: model, 26: -1}, 9: engine, 10: true}}` | `{13: slot, 24: the full slot}`, values at the model's defaults; notification 49 subtype 10 | 08, 10, 13 |
+| 40 | change a block's model | `98` slot, `100` `{23: false, 25: model, 26: -1}` | as op 39; notifications 49 subtypes 47 and 10, 39 | 09 |
 | 41 | block on/off | `98` block, `59` enabled | status 0 | 04 |
+| 71 | save the current preset to a place | `107` setlist, `108` index, `109` name | status 0, nil; notifications 5 and 6 | 17 |
 | 76 | (connect) | nil | map of floats | 06 |
-| 78 | select block (editor focus) | `98` block, `26` sub-block | status 0 | 03, 04 |
+| 78 | select block (editor focus) | `98` block, `26` sub-block | status 0 | 03, 04, 10, 13, 14 |
+| 85 | read all global settings | `{}` | one MessagePack blob of `{id: value}` maps | 23 |
 | 88 | select snapshot | `92` index | status 0 | 05 |
+| 89 | rename snapshot | `92` index, `109` name (NUL-terminated) | status 0, nil; notification 43 | 25 |
+| 98 | set snapshot LED colour | `92` index, `66` colour | status 0, nil; notification 48 | 27 |
+
+Moving a block (`11`) has no op of its own: HX Edit edits the document and writes the whole of it
+back with op 21 [seen]. Status 1 arrives while the 2.4 KB document is still being sent; notification
+20 for the transaction follows, then notification 21 (nil) [seen].
+
+The trails switch of a delay (`12`) is op 30 with `29: false, 28: 0` on the delay's slot, value
+`true`/`false` [seen]. `28` is the parameter index in the model's order: turning the Cali
+Rectifire's Bass (its second parameter) in `26` sends `28: 1`, values 0.26-0.28, which HX Edit shows
+as 2.6-2.8 [seen]. `29: true` addresses the model's parameters, `29: false` apparently the values
+after them: a Simple Delay holds 7 values for 6 parameters, the 7th being trails (see "count vs
+params") [inferred]. A list parameter is an integer: the cab's Mic is `28: 0`, set to 9 and then 8 in
+`13`, and the export holds `Mic: 8` [seen].
+
+New models in session 2: 18 Cali Rectifire (engine 17), 80 Simple Delay (engine 8, 7 values for 6
+parameters), 693 Cab Mic IR 4x12 Cali V30 (engine 31) [seen].
+
+### The librarian channel (service 2) [seen]
+
+Stored presets, as opposed to the one being edited, go over the service 2 channel with the same
+request format and its own transaction ids. Deferred operations there complete with notification 1
+`{102: txn, 103: status, 104: result}`, not 20. Export, import, copy and backup are bracketed by
+op 255 and op 254 (a rename is not), and after op 8 HX Edit reads the preset list again with op 1.
+At connect HX Edit sends 254, 0, 1, 112 and 13 here, the ops the Layer 3 introduction lists.
+
+| op | meaning | args | reply | capture |
+|---|---|---|---|---|
+| 0 | setlists | nil | `[{0: "PRESETS\0"}]` | 12 |
+| 1 | preset list | `107` setlist, `101: 2` | `[{index: {109: name, 123: false, 124: false, 125: 0}}]` | 19, 20 |
+| 4 | read a stored preset document | `107`, `108`, `101: 2` | document (str) | 18, 20, 23 |
+| 6 | rename a stored preset | `107`, `108`, `109` name | status 1; notification 6, then 1 | 15, 16 |
+| 8 | write a preset to a place | `107`, `108`, `109` name, `123`, `124`, `125` (as op 1 lists them), `110` document | status 1; notification 6, then 1 | 19, 20 |
+| 109 | not understood | `64` id, `106` bool, sometimes `105` number | status 0, nil | 23 |
+| 254 | end of a librarian operation | `{}` | status 0 | 18, 19, 20, 23 |
+| 255 | start of a librarian operation | `{}` | status 0; took 1.07 s in `18`, 2 ms elsewhere | 18, 19, 20, 23 |
+
+- **Export** (`18`) is op 255, op 4 on the place, op 254; HX Edit builds the `.hlx` from the
+  document itself [seen].
+- **Import to a place** (`19`) is op 255, op 8 with the file's preset, op 254, op 1. The device
+  answers status 1 and sends notification 6 with the new name before the 2.9 KB message has fully
+  arrived; notification 1 follows the last frame [seen].
+- **Copy and paste** (`20`) reads the source with op 4 and writes it to the target with op 8; the
+  pedal does not copy internally [seen].
+- **Backup** (`23`) is op 85 (globals), op 255, 1116 × op 109 (three per id, 372 ids), 126 × op 4
+  (every place, 0-125), op 254. The `.hxb` HX Edit wrote is 10.8 KB for all of that, so it is
+  compressed [inferred].
+- **Rename** (`15`, `16`) is op 6. `15` was meant as a snapshot rename but renamed the preset, to
+  "Test"; renaming a snapshot is RPC op 89 (`25`).
+
+Saving the preset being edited (`17`) is op 71 on the RPC channel, not a librarian write: the
+device stores its own edit buffer under the given name, so nothing but the place and name travels.
 
 `98` is the slot index in the preset document (input is slot 0) [seen: amp at slot 3, delay at 5].
 
@@ -96,8 +166,8 @@ Sending `{98: 17, 26: 1}` made the pedal select a second cab that the single cab
 (its screen showed None), and op 30 on it failed with status 255 `{111: -3}`. It is probably the
 sub-block of a dual cab or an amp+cab [inferred]; nx-edit sends 0 until a capture shows HX Edit
 sending anything else.
-`28` is the parameter index in the model's parameter order [inferred: Drive is the amp's first
-parameter and is 0].
+`28` is the parameter index in the model's parameter order [seen: Drive, the amp's first parameter,
+is 0 in `03`; Bass, its second, is 1 in `26`].
 
 ## Notifications on 0x1002 [seen, partly]
 
@@ -106,18 +176,42 @@ Notifications need ACK frames or the device stops sending them [map].
 
 | event | data | when | source |
 |---|---|---|---|
-| 4 | `{107: setlist, 108: index}` | the pedal has switched preset; HX Edit then reads op 23 and op 22 | 02 |
-| 8 | `{107, 108}` | a preset switch is under way, before 4 | 02 |
-| 20 | `{102: txn, 103: status, 104: result}` | a deferred operation completed | 02 |
-| 22 | `{118: id, 119: value}` | a global setting changed (16 tempo, 28, 19 seen) | 02, live-05 |
-| 23 | `{23: 0}` | after a snapshot switch; also six times while footswitches were pressed in snapshot mode | 05, live-06 |
-| 30 | `{98, 29, 26, 28, 119}` as op 30 | a parameter changed, by op 30 (an echo) or by a knob on the pedal | 03, live-05 |
-| 39 | `{98: slot, 26: sub}` | a block was selected, by op 78 or on the pedal | 04, live-05 |
+| 1 | `{102: txn, 103: status, 104: result}` | a deferred librarian operation (service 2) completed | 15, 16, 19, 20 |
+| 4 | `{107: setlist, 108: index}` | the pedal has switched preset; HX Edit then reads op 23 and op 22 | 02, 07, 24 |
+| 5 | `{107, 108, 116: u32}` | a preset was saved to a place (op 71); 116 not understood | 17 |
+| 6 | `{107, 108, 109: name}` | a place's name changed: rename, save, import, paste | 15, 16, 17, 19, 20 |
+| 8 | `{107, 108}` | a preset switch is under way, before 4 | 02, 07, 24 |
+| 20 | `{102: txn, 103: status, 104: result}` | a deferred operation completed | 02, 11 |
+| 21 | nil | after notification 20 for an op 21 document write | 11 |
+| 22 | `{118: id, 119: value}` | a global setting changed (see "Global settings") | 02, live-05, 07, 22, 24 |
+| 23 | `{23: 0}` | after a snapshot switch; also six times while footswitches were pressed in snapshot mode; twice during a preset load | 05, live-06, 07 |
+| 25 | nil | during a preset load, after each 23 | 07, 24 |
+| 27 | subtype 23 `{98: 0, 51: 1}` | during a preset load; not understood | 07, 24 |
+| 30 | `{98, 29, 26, 28, 119}` as op 30 | a parameter changed, by op 30 (an echo) or by a knob on the pedal | 03, live-05, 12, 13 |
+| 39 | `{98: slot, 26: sub}` | a block was selected, by op 78 or on the pedal, or after a model change | 04, live-05, 09 |
 | 42 | `{92: index}` | a snapshot switch began | 05 |
+| 43 | `{92: index, 109: name}` | a snapshot was renamed (op 89) | 25 |
+| 48 | `{92: index, 66: colour}` | a snapshot's LED colour was set (op 98) | 27 |
 | 46 | `{92: index}` | a snapshot finished loading; HX Edit then reads op 23 and op 22 | 05 |
-| 49 | subtype 17 `{98, 59: enabled}`, 10 `{98}`, 47 nil | a block was switched on or off (17), its model changed (10, after 47) | 04, live-05 |
+| 49 | subtype 17 `{98, 59: enabled}`, 10 `{98}`, 47 nil, 14 `{98}`, 11 `{56: 0, 64: 257}` | a block was switched on or off (17), a model was set by insert or change (10, after 47 on a change), a block was removed (14); 11 during a preset load, not understood | 04, live-05, 07-10, 14 |
 
 nx-edit reads the preset again after 4, 46 and 49, and applies 30 to the knob in place.
+
+### Global settings [seen, session 2]
+
+Read with op 24, written with op 25, reported by notification 22; all take `{118: id, 119: value}`.
+
+| id | meaning | values | source |
+|---|---|---|---|
+| 16 | tempo | 120 | 07, 24 |
+| 21 | footswitch mode | 2 after FS1+FS2 (FS1+FS2 then steps through presets); 3 again after a single footswitch picked a snapshot | 24 |
+| 28 | current preset index | 6 on selecting 03A, 88 and 3 on footswitch preset changes | 07, 24 |
+| 95 | Device Settings > EXP/FS Tip | bool: false EXP 1, true FS4 | 22 |
+| 96-99 | read together with 95 when HX Edit opens its settings: true, 0, 10, 11 | not identified | 22 |
+
+HX Edit's View settings (block name labels) stay in the application and send nothing [seen, `22`].
+Holding FS1+FS2 too long in `24-footswitch-mode-long-press` set 21 to 2, then switched to preset 88
+(30B), after which 21 read 3.
 
 ## Preset document (op 22)
 
@@ -235,6 +329,9 @@ states], 4: name, 14: custom name, 5: tempo, 12: LED colour}`:
 - names `"808\0"`, `"33\0"`, `"Lead\0"`; 14 true and 12 = 0 match the hlx `@custom_name` and
   `@ledcolor` [inferred from one preset; PROTOCOL.md reads 14 differently, as "renamed on the
   device", which does not fit our imported preset];
+- **12**, the LED colour, numbers HX Edit's menu from Auto: Red is 2 and Violet 9 [seen, op 98 in
+  `27`], which puts Auto 0, White 1, Dark Orange 3, Light Orange 4, Yellow 5, Green 6, Turquoise 7,
+  Blue 8, Pink 10, Off 11 [inferred from the menu order];
 - **3** is one `[flag, enabled]` per slot. `enabled` matches the hlx snapshot `blocks` for every block
   of all three snapshots (the Hall is off in 808, the 808 off in 33, delay and hall on in Lead).
   `flag` is false everywhere. Non-block slots read: input false, empty slots and split true, output
@@ -248,8 +345,12 @@ states], 4: name, 14: custom name, 5: tempo, 12: LED colour}`:
 
 `Document::set_param`, `set_enabled`, `set_cursor`, `set_current_snapshot` and `set_snapshot_name`
 edit the tree in place. Applying to `02` what captures 03–05 did (Drive 0.6, the Lead EQ values,
-delay and hall on, cursor on slot 5, current snapshot 2) and encoding gives `05` byte for byte. How a
-document is *written* to the device has not been captured.
+delay and hall on, cursor on slot 5, current snapshot 2) and encoding gives `05` byte for byte.
+
+A document is written with op 21 (the edit buffer) or librarian op 8 (a place), both as a str under
+key `110` with the same envelope and section table as op 22 returns [seen, `11`, `19`, `20`]. HX
+Edit's own documents always carry a correct table, so whether the device checks it is still
+untested.
 
 The setters never change what the device wrote: `set_param` keeps a value's type and encoding (an
 integer stays an integer of the same width, an f32 stays f32) and rejects a value that type cannot
@@ -276,7 +377,7 @@ keep-alive, close) adds 1, wrapping from 0xff to 0x00 (`04`, `05`). The two side
 independent: they often run in step because exchanges are one-to-one, but drift apart on idle
 channels (`03`: host 0x56 vs device 0x5c on `0x1002`). Nothing suggests the receiver checks them.
 
-### Acknowledgements [seen; window meaning inferred]
+### Acknowledgements [seen]
 
 The acknowledgement field is the sender's base plus the payload bytes it has received on that
 channel. The base is the last word of the sender's own HELLO: 0x1000 for the host, 0x200 for the
@@ -286,11 +387,12 @@ frame on each channel carries exactly 0x1000; the device's echo of a 9-byte serv
 captures the host never acknowledges more than it has received; it often lags while frames are in
 flight.
 
-[inferred] The base doubles as the receive window: a side may send payload up to the limit its peer
-last acknowledged. That explains the device stopping after 4096 bytes of unacknowledged
-notifications [map], and the device's 0x200 means the host may have at most 512 bytes in flight.
-`nx-session` enforces that window; no capture has a host message large enough to show what HX
-Edit does.
+The base doubles as the receive window: a side may send payload up to the limit its peer last
+acknowledged. That explains the device stopping after 4096 bytes of unacknowledged notifications
+[map], and the device's 0x200 means the host may have at most 512 bytes in flight. `19` shows HX
+Edit keeping to it [seen]: it sends 512 payload bytes (a 496-byte and a 16-byte frame), waits for
+the device's ACK, which raises the limit by exactly 0x200, and only then sends the next 512.
+`nx-session` enforces the same window.
 
 Kind bits: 0x04 data, 0x08 ack, 0x0c data that also carries a new acknowledgement. HX Edit sends
 0x0c exactly when the acknowledgement changed since its previous frame on that channel and 0x04
@@ -385,7 +487,10 @@ retried.
 
 ## Open questions
 
-- How a preset document is written back (opcode, whether the section table is checked).
+- Whether the device checks the section table of a document written with op 21 or op 8.
+- Op 109 in a backup (three calls per id for 372 ids, keys 64, 105, 106), the `116` word of
+  notification 5, list keys 123-125, and globals 96-99.
+- Why op 255 took a second before the export in `18` and two milliseconds everywhere else.
 - Preset document: top-level keys 2 and 3, most of 5, snapshot key 1, snapshot-list keys 7 and 13,
   block keys 12, 24.23, 24.26, junction key 18, and the first element of slot states and controller
   values. Captures that change footswitches, MIDI, Command Center, tempo and snapshot colour would
@@ -393,14 +498,12 @@ retried.
 - Whether `before-slot` and path positions hold for presets with other split positions, and what
   the 10-word section table looks like on this device.
 - Cab engine class 31 versus PROTOCOL.md's 15: a different cab type, or firmware-specific.
-- Op 30 sends the parameter index under `28` (with `29: true`), while a controller assignment in the
-  document keeps it under `6.29` (with `6.28: 0`). Drive is index 0, so capture 03 cannot tell which
-  key carries the index; a capture that edits a parameter other than the first would.
+- Op 30 carries the parameter index under `28` (settled by `26`), while a controller assignment in
+  the document keeps it under `6.29` with `6.28: 0`. Whether `6.28` is the assignment's counterpart
+  of op 30's `29` (and `6.29` then just the index) is not known.
 - Byte 0 of the channel frame body has always been 0: the high byte of a 16-bit sequence that never
   got past 0xff, or something else? (Sequences wrap at 0xff, so probably not a counter.)
 - The middle word of HELLO (`00010021` host, `00010001` device): version and capabilities?
-- Is the HELLO base really a window? A host write larger than 512 bytes (preset upload) would show
-  whether HX Edit waits for device ACKs; `nx-session` assumes it must.
 - Why HX Edit closes `0x1001` and `0x1002` at quit but not `0x1080`.
 - What the device does if the host closes `0x1080`, or if the device closes a channel first.
 - Whether non-deferred requests on other channels may run while a deferred operation is pending
@@ -414,5 +517,6 @@ retried.
   true; in the first session six seconds before nx-edit wrote anything) and notification 23
   `{23: 0}`, six times while the pedal was being handled. Capture 05 shows 23 after every snapshot
   switch, so the pedal was most likely in snapshot footswitch mode (FS1+FS2 cycles the modes), in
-  which footswitches choose snapshots, not presets; the power cycle restored the default mode. To
-  confirm: press FS1+FS2 and see whether the mode changes.
+  which footswitches choose snapshots, not presets; the power cycle restored the default mode.
+  Session 2 (`24`) confirms that FS1+FS2 changes the footswitch mode, global 21, and that a single
+  footswitch then picks snapshots; global 19 has not been seen again.
