@@ -5,6 +5,12 @@ speaks the pedal's USB protocol directly. Line 6 never published that protocol; 
 from USB captures of HX Edit and static analysis of its Windows binary, with tonepush's protocol
 notes as a starting map (see [docs/protocol.md](docs/protocol.md)).
 
+nx-edit exists because Line 6 offers no HX Edit for Linux. The protocol was studied only as far as
+an independently written editor needs to work with the pedal, mostly by observing HX Edit's USB
+traffic, as the EU Software Directive (2009/24/EC, articles 5(3) and 6) allows for interoperability.
+nx-edit contains no code or data of Line 6; the model data it shows is imported from the user's own
+HX Edit installation.
+
 ![nx-edit](docs/nx-edit-design.png)
 
 Tested against an HX Stomp on firmware 3.71, with HX Edit 3.82 as the reference, on NixOS and in a
