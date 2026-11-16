@@ -34,6 +34,19 @@ Windows 11 VM.
   ([docs/capture.md](docs/capture.md), "Next session").
 - Firmware updates; those stay with HX Edit.
 
+## Download
+
+Builds for Linux (x86_64), Windows (x86_64) and macOS (Apple Silicon and Intel) are attached to
+each [release](https://github.com/tluijken/nx-edit/releases). They are not signed:
+
+- Windows SmartScreen and macOS Gatekeeper warn on first start. On macOS, clear the quarantine flag
+  with `xattr -d com.apple.quarantine nx-edit`.
+- On Linux, nx-edit loads the X11 or Wayland libraries and OpenGL of the desktop it runs on, and
+  needs access to the pedal's USB device (see below).
+- On Windows, it uses the USB driver HX Edit installed (see "Windows").
+
+The macOS builds are compiled but have not been tried against a pedal yet.
+
 ## Running
 
 ```sh
