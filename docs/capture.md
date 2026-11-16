@@ -87,6 +87,7 @@ What each capture settles is in [protocol.md](protocol.md).
 | `28-snapshot-copy-paste` | copy TestShot, select snapshot 2, paste | ops 90, 88, 91 |
 | `29-nx-edit-save` | nx-edit: Bass on 03A, Save, switch away and back | nx-edit's op 71, as HX Edit's |
 | `30-nx-edit-typed-params` | nx-edit: cab Mic, Trails, Tempo Sync and Note Sync; then the pedal by hand | integers, switches and op 30 with `29: false` accepted; a model change on the pedal |
+| `31-engine-tour` | 04A: one block changed through every category, delays several times, a looper last | the engine per category, Amp+Cab, the looper slot |
 
 Renaming in HX Edit: a right-click on a preset in the list (or Ctrl+R) renames the preset, also
 when a snapshot was meant (`15`, and a first try at `25` kept as
@@ -102,16 +103,11 @@ Not captured:
 nx-edit's conversion of `18`'s document is compared with `18-export-preset.hlx` field by field in
 [protocol.md](protocol.md), "Compared with HX Edit's export".
 
-## Next session: imports for the engine table
+## Engine table (capture 31, 2026-11-17)
 
-Parked work: "Assign to a place" (branch `feat/assign`, rebased on master 2026-11-17) needs an
-`.hlx` to document encoder, and that needs each block type's engine number, which only HX Edit's
-own writes show (protocol.md, "A document as HX Edit writes it"). Plan:
-
-1. Make or download a few `.hlx` presets that together hold every block category: modulation,
-   dynamics, wah, pitch/synth, filter, volume/pan, preamp, amp+cab, IR, looper and send/return,
-   also mono and stereo variants of one effect.
-2. Import each with HX Edit to an empty place (03C onward), one capture per import, and keep the
-   `.hlx` next to its capture. Op 8 then carries HX Edit's document for that file.
-3. Read each document's engines against the file's `@type`, and add the pairs as fixtures for the
-   encoder's byte-for-byte tests.
+Adding a block (op 39) and writing a whole preset (op 8, "Assign to a place" on branch
+`feat/assign`) need each block's engine number. `31` gave it for every category (protocol.md, "A
+document as HX Edit writes it"). Still to capture, by changing one block's model in HX Edit: a
+return and an FX loop, a legacy cab from `cab.models`, a gate, and a stereo variant if the HX Stomp
+offers one. For `feat/assign`, one import of a file with many block types would also give a second
+byte-for-byte fixture beside `19`.
