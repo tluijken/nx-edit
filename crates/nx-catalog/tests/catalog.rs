@@ -141,3 +141,38 @@ fn segmented_controls_are_told_apart_from_lists() {
     assert!(!catalog.segmented("test_mics"));
     assert!(!catalog.segmented("unknown"));
 }
+
+#[test]
+fn a_block_engine_follows_its_model_category() {
+    use nx_catalog::engine;
+    assert_eq!(engine(Some(3), "HD2_DistScream808Mono"), Some(1));
+    assert_eq!(engine(Some(9), "HD2_DelaySimpleDelayMono"), Some(8));
+    assert_eq!(engine(Some(10), "VIC_DynPlateMono"), Some(8));
+    assert_eq!(engine(Some(1), "HD2_AmpRevvGenRed"), Some(17));
+    assert_eq!(engine(Some(13), "HD2_PreampTweedBluesBrt"), Some(17));
+    assert_eq!(engine(Some(19), "HD2_CabMicIr_4x12CaliV30"), Some(31));
+    assert_eq!(engine(Some(16), "HD2_ImpulseResponse1024Mono"), Some(19));
+    assert_eq!(engine(Some(15), "HD2_LooperOneSwitchMono"), Some(22));
+    assert_eq!(engine(Some(12), "HD2_SendMono1"), Some(25));
+    assert_eq!(engine(Some(12), "HD2_SendMono2"), Some(26));
+}
+
+#[test]
+fn an_engine_not_seen_yet_is_none() {
+    use nx_catalog::engine;
+    assert_eq!(engine(Some(12), "HD2_ReturnMono1"), None, "returns were not captured");
+    assert_eq!(engine(Some(2), "HD2_CabSomething"), None);
+    assert_eq!(engine(None, "HD2_DistScream808Mono"), None);
+}
+
+#[test]
+fn a_catalog_model_finds_its_mono_or_stereo_number() {
+    let syms = nx_catalog::ModelSymbols::parse(
+        br#"[{"symbol": "HD2_AmpRevvGenRed"}, {"symbol": "HD2_DistKinkyBoostMono"}, {"symbol": "HD2_DistKinkyBoostStereo"}]"#,
+    )
+    .unwrap();
+    assert_eq!(syms.number_for("HD2_AmpRevvGenRed", false), Some(0));
+    assert_eq!(syms.number_for("HD2_DistKinkyBoost", false), Some(1));
+    assert_eq!(syms.number_for("HD2_DistKinkyBoost", true), Some(2));
+    assert_eq!(syms.number_for("HD2_Nothing", false), None);
+}

@@ -37,6 +37,13 @@ impl ModelSymbols {
         self.entries.iter().position(|e| e.symbol == symbol).map(|i| i as u32)
     }
 
+    /// The number of a catalog model (a shared id such as `HD2_DistKinkyBoost`), in its mono or
+    /// stereo variant where it has both.
+    pub fn number_for(&self, id: &str, stereo: bool) -> Option<u32> {
+        let variant = if stereo { "Stereo" } else { "Mono" };
+        self.number(&format!("{id}{variant}")).or_else(|| self.number(id))
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

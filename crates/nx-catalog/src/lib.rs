@@ -4,6 +4,7 @@
 
 mod categories;
 mod controls;
+mod engine;
 mod import;
 mod models;
 mod symbols;
@@ -12,6 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub use categories::{Category, CategoryGroup};
+pub use engine::{AMP_WITH_CAB, engine};
 pub use import::{default_res_dir, import_hxedit, import_installer};
 pub use models::{ModelDef, ParamDef};
 pub use symbols::{ModelSymbol, ModelSymbols, shared_id};
