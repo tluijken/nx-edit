@@ -123,8 +123,10 @@ The trails switch of a delay (`12`) is op 30 with `29: false, 28: 0` on the dela
 Rectifire's Bass (its second parameter) in `26` sends `28: 1`, values 0.26-0.28, which HX Edit shows
 as 2.6-2.8 [seen]. `29: true` addresses the model's parameters, `29: false` apparently the values
 after them: a Simple Delay holds 7 values for 6 parameters, the 7th being trails (see "count vs
-params") [inferred]. A list parameter is an integer: the cab's Mic is `28: 0`, set to 9 and then 8 in
-`13`, and the export holds `Mic: 8` [seen].
+params") [inferred]; nx-edit's own switch of a Ducked Delay's trails this way was accepted and
+echoed [seen, `30`]. A list parameter is an integer: the cab's Mic is `28: 0`, set to 9 and then 8
+in `13`, and the export holds `Mic: 8` [seen]. A switch is a boolean: Tempo Sync `28: 11, 119:
+true` [seen, `30`].
 
 New models in session 2: 18 Cali Rectifire (engine 17), 80 Simple Delay (engine 8, 7 values for 6
 parameters), 693 Cab Mic IR 4x12 Cali V30 (engine 31) [seen].
@@ -200,7 +202,7 @@ Notifications need ACK frames or the device stops sending them [map].
 | 44 | `{92, 93}` | a snapshot was copied (op 90: `0, 0`) or pasted (op 91: `1, 1`, the target being snapshot 1); what 92 and 93 each mean is not settled | 28 |
 | 48 | `{92: index, 66: colour}` | a snapshot's LED colour was set (op 98) | 27 |
 | 46 | `{92: index}` | a snapshot finished loading; HX Edit then reads op 23 and op 22 | 05 |
-| 49 | subtype 17 `{98, 59: enabled}`, 10 `{98}`, 47 nil, 14 `{98}`, 11 `{56: 0, 64: 257}` | a block was switched on or off (17), a model was set by insert or change (10, after 47 on a change), a block was removed (14); 11 during a preset load, not understood | 04, live-05, 07-10, 14 |
+| 49 | subtype 17 `{98, 59: enabled}`, 10 `{98}`, 47 nil, 14 `{98}`, 11 `{56: 0, 64: 257}` | a block was switched on or off (17), a model was set by insert or change (10, after 47 on a change), a block was removed (14); 11 during a preset load, not understood | 04, live-05, 07-10, 14, 30 |
 
 nx-edit reads the preset again after 4, 46 and 49, and applies 30 to the knob in place.
 
@@ -211,8 +213,9 @@ Read with op 24, written with op 25, reported by notification 22; all take `{118
 | id | meaning | values | source |
 |---|---|---|---|
 | 16 | tempo | 120 | 07, 24 |
+| 19 | not identified | became true while the pedal was handled by hand, 1.4 s before its block selection moved along the chain [inferred: the pedal's edit view] | live-05, 30 |
 | 21 | footswitch mode | 2 after FS1+FS2 (FS1+FS2 then steps through presets); 3 again after a single footswitch picked a snapshot | 24 |
-| 28 | current preset index | 6 on selecting 03A, 88 and 3 on footswitch preset changes | 07, 24 |
+| 28 | current preset index | 6 on selecting 03A, 88 and 3 on footswitch preset changes | 07, 24, 30 |
 | 95 | Device Settings > EXP/FS Tip | bool: false EXP 1, true FS4 | 22 |
 | 96-99 | read together with 95 when HX Edit opens its settings: true, 0, 10, 11 | not identified | 22 |
 

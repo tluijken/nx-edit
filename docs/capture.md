@@ -85,6 +85,8 @@ What each capture settles is in [protocol.md](protocol.md).
 | `26-amp-second-knob` | Cali Rectifire Bass 2.6 to 2.8 | op 30 with `28: 1` |
 | `27-snapshot-led-colour` | snapshot colour Red, then Violet | op 98, colours 2 and 9 |
 | `28-snapshot-copy-paste` | copy TestShot, select snapshot 2, paste | ops 90, 88, 91 |
+| `29-nx-edit-save` | nx-edit: Bass on 03A, Save, switch away and back | nx-edit's op 71, as HX Edit's |
+| `30-nx-edit-typed-params` | nx-edit: cab Mic, Trails, Tempo Sync and Note Sync; then the pedal by hand | integers, switches and op 30 with `29: false` accepted; a model change on the pedal |
 
 Renaming in HX Edit: a right-click on a preset in the list (or Ctrl+R) renames the preset, also
 when a snapshot was meant (`15`, and a first try at `25` kept as

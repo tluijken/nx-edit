@@ -24,7 +24,6 @@ Tested against an HX Stomp on firmware 3.71, with HX Edit 3.82 as the reference.
 
 ## Not yet
 
-- Writing to a bool or int parameter.
 - Exporting the pedal's preset as an `.hlx` that HX Edit accepts.
 - Importing a preset onto the pedal ("assign to the pedal").
 - Firmware updates.
