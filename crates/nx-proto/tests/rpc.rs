@@ -104,3 +104,28 @@ fn set_param_carries_integers_and_booleans_as_they_are() {
     assert_eq!(decoded.to_string(), "{102: 1011, 100: 30, 101: {98: 3, 29: true, 26: 0, 28: 0, 119: 9}}");
     assert_eq!(Request::from_value(&decoded), Some((1011, mic)));
 }
+
+fn sent(request: &Request, txn: u64) -> String {
+    let decoded = rmpv::decode::read_value(&mut &request.encode(txn)[..]).unwrap();
+    assert_eq!(Request::from_value(&decoded), Some((txn, request.clone())), "{decoded}");
+    decoded.to_string()
+}
+
+#[test]
+fn inserting_a_block_is_the_message_hx_edit_sends() {
+    let amp = Request::InsertBlock { block: 1, model: 545, engine: 17, cab: None };
+    assert_eq!(sent(&amp, 1009), "{102: 1009, 100: 39, 101: {98: 1, 99: {19: 6, 20: {24: {23: false, 25: 545, 26: -1}, 9: 17, 10: true}}}}");
+}
+
+#[test]
+fn changing_a_model_is_the_message_hx_edit_sends() {
+    let rectifire = Request::ChangeModel { block: 1, model: 18, cab: None };
+    assert_eq!(sent(&rectifire, 1010), "{102: 1010, 100: 40, 101: {98: 1, 100: {23: false, 25: 18, 26: -1}}}");
+    let amp_cab = Request::ChangeModel { block: 2, model: 38, cab: Some(711) };
+    assert_eq!(sent(&amp_cab, 1026), "{102: 1026, 100: 40, 101: {98: 2, 100: {23: true, 25: 38, 26: 711}}}");
+}
+
+#[test]
+fn removing_a_block_is_the_message_hx_edit_sends() {
+    assert_eq!(sent(&Request::RemoveBlock { block: 1 }, 1014), "{102: 1014, 100: 28, 101: {98: 1}}");
+}
