@@ -47,6 +47,8 @@ enum Command {
     Select { setlist: u64, index: u64 },
     Snapshot(u64),
     Enabled { generation: u64, slot: u64, enabled: bool },
+    /// A block inserted, given another model or removed, on the preset of `generation`.
+    Chain { generation: u64, request: Request },
     Save { setlist: u64, index: u64, name: String },
 }
 
@@ -118,6 +120,22 @@ impl Live {
     /// Turns a block on or off (op 41) on the preset of `generation`; `slot` as op 30 addresses it.
     pub fn set_enabled(&self, generation: u64, slot: u64, enabled: bool) {
         self.send(Command::Enabled { generation, slot, enabled });
+    }
+
+    /// Puts `model` into the empty `slot` of the preset of `generation` (op 39). The pedal then
+    /// reports a block change, and the preset is read again.
+    pub fn insert(&self, generation: u64, slot: u64, model: u32, engine: u64) {
+        self.send(Command::Chain { generation, request: Request::InsertBlock { block: slot, model, engine, cab: None } });
+    }
+
+    /// Gives the block in `slot` another model (op 40); the pedal picks its engine.
+    pub fn change_model(&self, generation: u64, slot: u64, model: u32) {
+        self.send(Command::Chain { generation, request: Request::ChangeModel { block: slot, model, cab: None } });
+    }
+
+    /// Empties `slot` (op 28).
+    pub fn remove(&self, generation: u64, slot: u64) {
+        self.send(Command::Chain { generation, request: Request::RemoveBlock { block: slot } });
     }
 
     /// Stores the pedal's edits at a place under `name` (op 71), reported as [`Update::Saved`].
@@ -285,7 +303,8 @@ impl Worker {
             Command::Enabled { generation, slot, enabled } if generation == self.generation => {
                 self.session.request(Request::SetBlockEnabled { block: slot, enabled }).map(drop)
             }
-            Command::Edit(_) | Command::Enabled { .. } => Ok(()),
+            Command::Chain { generation, request } if generation == self.generation => self.session.request(request).map(drop),
+            Command::Edit(_) | Command::Enabled { .. } | Command::Chain { .. } => Ok(()),
             Command::Select { setlist, index } => {
                 let outcome = self.session.request(Request::SelectPreset { setlist, index }).map(drop);
                 self.next_generation();
@@ -673,5 +692,39 @@ mod tests {
             !changes.is_empty()
         });
         assert_eq!(changes, [ParamChange { slot: 1, sub: 0, param: Param::Extra(0), value: Value::Boolean(true) }]);
+    }
+
+    #[test]
+    fn chain_edits_go_out_as_ops_39_40_and_28() {
+        let device = device(echo);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        live.insert(0, 2, 80, 8);
+        live.change_model(0, 2, 18);
+        live.remove(0, 2);
+        drop(live);
+        let chain: Vec<Request> = sent(&device)
+            .into_iter()
+            .filter(|r| matches!(r, Request::InsertBlock { .. } | Request::ChangeModel { .. } | Request::RemoveBlock { .. }))
+            .collect();
+        assert_eq!(
+            chain,
+            [
+                Request::InsertBlock { block: 2, model: 80, engine: 8, cab: None },
+                Request::ChangeModel { block: 2, model: 18, cab: None },
+                Request::RemoveBlock { block: 2 },
+            ]
+        );
+    }
+
+    #[test]
+    fn chain_edits_meant_for_an_older_preset_are_dropped() {
+        let device = pedal(NAMES);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        switched_to(&device, 3);
+        wait_for_load(&live);
+        live.insert(0, 2, 80, 8);
+        live.remove(0, 2);
+        drop(live);
+        assert!(sent(&device).iter().all(|r| !matches!(r, Request::InsertBlock { .. } | Request::RemoveBlock { .. })));
     }
 }
