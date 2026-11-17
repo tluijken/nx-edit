@@ -105,9 +105,9 @@ nx-edit's conversion of `18`'s document is compared with `18-export-preset.hlx` 
 
 ## Engine table (capture 31, 2026-11-17)
 
-Adding a block (op 39) and writing a whole preset (op 8, "Assign to a place" on branch
-`feat/assign`) need each block's engine number. `31` gave it for every category (protocol.md, "A
+Adding a block (op 39) and writing a whole preset (op 8, "Assign to a place") need each block's
+engine number. `31` gave it for every category (protocol.md, "A
 document as HX Edit writes it"). Still to capture, by changing one block's model in HX Edit: a
 return and an FX loop, a legacy cab from `cab.models`, a gate, and a stereo variant if the HX Stomp
-offers one. For `feat/assign`, one import of a file with many block types would also give a second
-byte-for-byte fixture beside `19`.
+offers one. One HX Edit import of a file with many block types, an amp with a cab and a path B
+would give a second byte-for-byte fixture beside `19`, and the `.hlx` side of an amp with a cab.

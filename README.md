@@ -32,15 +32,15 @@ Windows 11 VM.
   move them to the trash. Library presets can be edited offline and saved (Ctrl+S); nx-edit asks
   before it drops unsaved edits.
 - Browses CustomTone, signs in to line6.com and downloads tones into the library.
+- Puts a library or CustomTone preset on a place of the pedal ("Assign to a place on the pedal…"
+  in the library's context menu), written as HX Edit writes an import. Amps with a cab, dual cabs,
+  returns, FX loops and other blocks whose engine number has not been captured are refused by name.
 
 ## Not yet
 
 - Exporting the pedal's preset as an `.hlx` that HX Edit accepts: the conversion writes 60 of the
   132 values HX Edit's export holds ([docs/protocol.md](docs/protocol.md), "Compared with HX Edit's
   export").
-- Importing a preset onto the pedal ("assign to the pedal"): the place can be chosen on branch
-  `feat/assign`, but writing the preset waits on captures of more block types
-  ([docs/capture.md](docs/capture.md), "Next session").
 - Firmware updates; those stay with HX Edit.
 
 ## Download

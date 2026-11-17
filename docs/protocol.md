@@ -418,12 +418,44 @@ normalises it when it stores the preset. Compared key by key, HX Edit's form dif
 - `7.37`: HX Edit's own build (`v3.60-56-g73ae345`), not the firmware's;
 - key 5 also holds 111-116 (1.0 each), 380 and 381 (2), 252 and 253 (0), which the pedal drops;
 - each snapshot's key 1 has 13 entries instead of 11, and the first element of every slot state
-  (`3.N.0`) is nil instead of false, which `Document::decode` rejects today;
+  (`3.N.0`) is nil instead of false;
 - the junctions' `before-slot` is 7 and 9 for an unused path B, where the pedal stores 0;
 - controller assignments come in another order.
 
-Every other value is the same. That makes `19` the byte-for-byte target for an `.hlx` to document
-encoder, which "Assign to a place" (branch `feat/assign`) needs before its Replace button can work.
+Every other value is the same. `nx_device::import::hlx_document` writes `Revv_Home.hlx` as `19`
+byte for byte. How it maps the file [seen, `19`, unless marked]:
+
+- slots: input 0 (`inputA`), path A blocks at `1 + @position`, output 9 (`outputA`), split 10,
+  path B blocks at `11 + @position` [inferred], join 19, the rest empty (`{19: 8, 20: nil}`);
+- values follow `Helix.sym`'s order up to the last parameter the file holds: a cab's sym lists
+  `IrData` after Level, which neither the file nor the document has, and the input stops
+  after `decay`. A delay's or reverb's `@trails` comes after them, with key 3 one less than key 2;
+- a block is `{24: {23: false, 25: model, 26: -1}, 9: engine, 10: @enabled, 11: values, 12: empty}`;
+  a looper uses the pedal's own slot kind 7 form [inferred];
+- split and join hold path B's endpoint (`@input`/`@output` of `inputB`/`outputB`, values left out),
+  model, `@position + 1`, `@enabled` and values, and `18: false`;
+- controller assignments are numbered by block key and then parameter name, alphabetically, and
+  sit under their controller (`@controller`) in key 4; key 1 and key 5 both hold the slot. Each
+  snapshot's key 2 holds `[@fs_enabled, id, @value]` at position `id`;
+- a snapshot's slot states are nil and the block's state in that snapshot; input, output and join
+  write false, the split and empty slots true;
+- key 5: `@tempo` under 16, the variax values under 45-56 in the order model, tone knob, volume
+  knob, lock controls, custom tuning, the six string tunings, mag mode [inferred from defaults
+  only], then the constants listed above;
+- key 7: the pedal's own service and version (`P33`, `0x03710000`, although the file says 3.70) and
+  the file's `build_sha`;
+- key 2 is thirteen int16 zeros and thirteen arrays of seven uint8 zeros, the only values written
+  in a non-shortest form.
+
+An amp with a cab (`@cab`) and a dual cab are refused: no `.hlx` here holds one, so the file side is
+not known.
+
+### Writing a place (librarian op 8) [seen, `19`]
+
+HX Edit's import sends op 255 `{}`, op 8, op 254 `{}` and then reads the list again with op 1. Op 8
+is `{107: setlist, 108: place, 109: name + NUL, 123: false, 124: false, 125: 0, 110: document}`, the
+document a str as with op 21. nx-edit sends the same; whether the pedal reloads its edit buffer
+when the place written is the one it holds is not captured, so nx-edit selects that place again.
 
 A block's engine (slot key 9) is in none of HX Edit's data files. Op 39 (insert) carries it, op 40
 (change model) does not, and the pedal's reply to both holds the whole slot with it. `31` changed one
