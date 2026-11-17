@@ -26,6 +26,8 @@ const BLOCK_H: f32 = 104.0;
 /// A block column narrower than this makes the chain scroll sideways instead.
 const MIN_COLUMN: f32 = 104.0;
 const SIDE_W: f32 = 340.0;
+/// The least height the block editor and the side card get below the chain.
+const MIN_BOTTOM: f32 = 360.0;
 const KNOB_CARD: egui::Vec2 = vec2(116.0, 140.0);
 /// The `.hlx` key of a delay's or reverb's trails switch.
 const TRAILS: &str = "@trails";
@@ -113,6 +115,12 @@ pub struct EditorApp {
     closing: bool,
     /// A library preset whose place on the pedal is being chosen.
     assigning: Option<crate::assign::Assign>,
+    /// The models search field takes the keyboard when the models list is next drawn.
+    focus_search: bool,
+    /// What the presets list is narrowed to.
+    preset_filter: String,
+    /// The presets list scrolls to the pedal's preset once it is drawn.
+    scroll_to_current: bool,
     /// Importing HX Edit's model data while there is none.
     setup: crate::setup::Setup,
     /// Why the HX Edit data that is there did not load.
@@ -176,6 +184,9 @@ impl EditorApp {
             assigning: None,
             closing: false,
             setup: Default::default(),
+            preset_filter: String::new(),
+            focus_search: false,
+            scroll_to_current: true,
             catalog_problem: None,
         }
     }
@@ -185,11 +196,12 @@ impl EditorApp {
         self.connector = Some(Connector::new(connect));
     }
 
-    /// Draws the top bar; true when its Save button was clicked.
-    fn top_bar(&mut self, ui: &mut Ui) -> bool {
-        let mut save = false;
+    /// Draws the top bar: which preset is shown, from where and whether it is edited, its snapshots,
+    /// and what can be done with it.
+    fn top_bar(&mut self, ui: &mut Ui) {
+        let mut action = None;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 12.0;
+            ui.spacing_mut().item_spacing.x = 10.0;
             let (logo, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
             ui.painter().rect_filled(logo, CornerRadius::same(12), theme::ACCENT);
             pulse_icon(ui.painter(), logo.center(), theme::BG);
@@ -197,32 +209,63 @@ impl EditorApp {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.add_space(2.0);
                 ui.label(RichText::new("nx-edit").font(theme::semibold(15.0)));
-                let firmware = self.preset.as_ref().map(|p| p.device_version()).filter(|v| *v != 0);
+                // A library file carries the firmware it was written for, not the pedal's.
+                let pedal = if self.showing_file.is_some() { self.pedal_preset.as_ref() } else { self.preset.as_ref() };
+                let firmware = pedal.filter(|_| self.connection.is_some()).map(|p| p.device_version()).filter(|v| *v != 0);
                 let sub = firmware.map_or_else(|| "HX Stomp".to_owned(), |v| format!("HX Stomp · firmware {}.{:02x}", v >> 24, (v >> 16) & 0xff));
                 ui.label(RichText::new(sub).font(theme::regular(12.0)).color(theme::TEXT_DIM));
             });
             if let Some(preset) = &self.preset {
-                pill(ui, |ui| {
+                let (source, hint) = match (&self.showing_file, self.connection.as_ref().and_then(|c| c.current)) {
+                    (Some(path), _) => ("Library".to_owned(), format!("Library file {}", path.display())),
+                    (None, Some(index)) => (nx_proto::slot_label(index), format!("Preset {} on the HX Stomp", nx_proto::slot_label(index))),
+                    (None, None) => match self.lost.as_ref().and_then(|l| l.place) {
+                        Some(index) => (nx_proto::slot_label(index), "The HX Stomp is disconnected".to_owned()),
+                        None => (String::new(), String::new()),
+                    },
+                };
+                let edited = self.can_save();
+                let response = pill(ui, |ui| {
+                    if !source.is_empty() {
+                        ui.label(RichText::new(&source).font(mono(13.0)).color(theme::TEXT_DIM));
+                    }
                     ui.label(RichText::new(preset.name()).font(theme::semibold(15.0)));
+                    if edited {
+                        dot(ui, theme::ORANGE, 8.0);
+                    }
                 });
-                let current = preset.current_snapshot();
-                if let Some(name) = preset.snapshot_names().get(current) {
-                    pill(ui, |ui| {
-                        dot(ui, theme::ACCENT, 8.0);
-                        ui.label(RichText::new(format!("Snapshot {} · {name}", current + 1)).font(theme::semibold(13.0)));
-                    });
+                let hint = if edited { format!("{hint} · edited, not saved") } else { hint };
+                if !hint.is_empty() {
+                    response.on_hover_text(hint);
                 }
-                if self.can_save() {
+                if let Some(index) = snapshot_switch(ui, preset, self.editable()) {
+                    action = Some(TopAction::Snapshot(index));
+                }
+                if edited {
                     let button = egui::Button::new(RichText::new("Save").font(theme::semibold(13.0)).color(theme::BG))
                         .fill(theme::ACCENT)
                         .corner_radius(CornerRadius::same(255))
                         .min_size(vec2(72.0, 36.0));
-                    let (hint, note) = match self.connection.as_ref().and_then(|c| c.current).filter(|_| self.showing_file.is_none()) {
-                        Some(index) => (format!("Save on the pedal at {} (Ctrl+S)", nx_proto::slot_label(index)), "Not saved on the pedal"),
-                        None => ("Write the changes to the library file (Ctrl+S)".to_owned(), "Unsaved changes"),
+                    let hint = match self.connection.as_ref().and_then(|c| c.current).filter(|_| self.showing_file.is_none()) {
+                        Some(index) => format!("Edited, not saved to {0}. Save on the pedal at {0} (Ctrl+S)", nx_proto::slot_label(index)),
+                        None => "Edited, not saved to the file. Write the changes to the library file (Ctrl+S)".to_owned(),
                     };
-                    save = ui.add(button).on_hover_text(hint).clicked();
-                    ui.label(RichText::new(note).font(theme::regular(12.0)).color(theme::TEXT_DIM));
+                    if ui.add(button).on_hover_text(hint).clicked() {
+                        action = Some(TopAction::Save);
+                    }
+                }
+                let button = |text: &str| egui::Button::new(RichText::new(text).font(theme::semibold(13.0))).corner_radius(CornerRadius::same(255)).min_size(vec2(0.0, 36.0));
+                if let Some(path) = &self.showing_file {
+                    if let Some(pedal) = self.pedal_preset.as_ref().filter(|_| self.live_running()) {
+                        let place = self.connection.as_ref().and_then(|c| c.current).map(|i| format!("{} ", nx_proto::slot_label(i))).unwrap_or_default();
+                        let back = ui.add(button("Back to the pedal")).on_hover_text(format!("Show the pedal's preset {place}{} again", pedal.name()));
+                        if back.clicked() {
+                            action = Some(TopAction::BackToPedal);
+                        }
+                    }
+                    if ui.add(button("Send to the pedal…")).on_hover_text("Put this library preset on a place of the HX Stomp").clicked() {
+                        action = Some(TopAction::Send(path.clone(), preset.name().to_owned()));
+                    }
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -234,7 +277,19 @@ impl EditorApp {
                 self.notice_pill(ui);
             });
         });
-        save
+        match action {
+            Some(TopAction::Save) => {
+                self.save();
+            }
+            Some(TopAction::Snapshot(index)) => self.select_snapshot(index),
+            Some(TopAction::BackToPedal) => self.leave(Leave::Pedal),
+            Some(TopAction::Send(path, name)) => self.start_assign(path, name),
+            None => {}
+        }
+    }
+
+    fn live_running(&self) -> bool {
+        self.connection.as_ref().is_some_and(|c| c.live.running())
     }
 
     /// Whether nx-edit is connected to the pedal, looking for it, or why it is not; true when
@@ -347,6 +402,7 @@ impl EditorApp {
         for note in notes {
             self.notices.error(note);
         }
+        self.scroll_to_current = true;
         if self.showing_file.is_some() {
             self.pedal_preset = Some(preset);
             return;
@@ -750,6 +806,7 @@ impl EditorApp {
         self.selected_empty = Some(position);
         self.selected_block = None;
         self.panel = Panel::Models;
+        self.focus_search = true;
     }
 
     /// A model picked in the models list: put into the empty slot picked in the chain, or given to
@@ -860,6 +917,21 @@ impl EditorApp {
         if self.can_save() && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
             self.save();
         }
+        const NUMBERS: [egui::Key; 9] = [
+            egui::Key::Num1,
+            egui::Key::Num2,
+            egui::Key::Num3,
+            egui::Key::Num4,
+            egui::Key::Num5,
+            egui::Key::Num6,
+            egui::Key::Num7,
+            egui::Key::Num8,
+            egui::Key::Num9,
+        ];
+        let count = self.preset.as_ref().map_or(0, |p| p.snapshot_names().len());
+        if let Some(index) = ctx.input(|i| if i.modifiers.alt { NUMBERS.iter().position(|k| i.key_pressed(*k)) } else { None }).filter(|i| *i < count) {
+            self.select_snapshot(index);
+        }
         let (undo, redo) = ctx.input(|i| {
             let z = i.modifiers.command && i.key_pressed(egui::Key::Z);
             (z && !i.modifiers.shift, (z && i.modifiers.shift) || (i.modifiers.command && i.key_pressed(egui::Key::Y)))
@@ -893,6 +965,7 @@ impl EditorApp {
 
     fn side_card(&mut self, ui: &mut Ui) {
         card(ui, |ui| {
+            ui.set_min_height(ui.available_height());
             let mut tabs = vec![(Panel::Library, "Library"), (Panel::Snapshots, "Snapshots"), (Panel::Models, "Models")];
             if self.connection.is_some() {
                 tabs.insert(0, (Panel::Presets, "Presets"));
@@ -911,10 +984,19 @@ impl EditorApp {
     fn presets(&mut self, ui: &mut Ui) {
         let Some(connection) = &self.connection else { return };
         let mut pick = None;
-        egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
-            for entry in &connection.presets {
+        search_field(ui, &mut self.preset_filter, "Find a preset: 03B or a name");
+        ui.add_space(6.0);
+        let scroll_to_current = std::mem::take(&mut self.scroll_to_current);
+        egui::ScrollArea::vertical().max_height(list_height(ui)).show(ui, |ui| {
+            for entry in crate::assign::places(&connection.presets, &self.preset_filter) {
                 let current = connection.current == Some(entry.index);
                 let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+                let label = nx_proto::slot_label(entry.index);
+                let edited = current && self.pedal_unsaved;
+                response.widget_info(|| {
+                    let state = if edited { ", edited" } else { "" };
+                    egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, current, format!("{label} {}{state}", entry.name))
+                });
                 let painter = ui.painter();
                 if current {
                     painter.rect_filled(rect, CornerRadius::same(10), theme::RAISED_HI);
@@ -922,10 +1004,19 @@ impl EditorApp {
                 } else if response.hovered() {
                     painter.rect_filled(rect, CornerRadius::same(10), theme::RAISED);
                 }
+                focus_ring(ui, rect, &response);
+                let painter = ui.painter();
                 let label_color = if current { theme::ACCENT } else { theme::TEXT_DIM };
-                painter.text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, nx_proto::slot_label(entry.index), mono(13.0), label_color);
+                painter.text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, &label, mono(13.0), label_color);
                 let font = if current { theme::semibold(14.0) } else { theme::regular(14.0) };
                 painter.text(rect.left_center() + vec2(60.0, 0.0), Align2::LEFT_CENTER, &entry.name, font, if current { theme::TEXT } else { theme::TEXT_MID });
+                if edited {
+                    painter.text(rect.right_center() - vec2(24.0, 0.0), Align2::RIGHT_CENTER, "edited", theme::regular(12.0), theme::ORANGE);
+                    painter.circle_filled(rect.right_center() - vec2(14.0, 0.0), 4.0, theme::ORANGE);
+                }
+                if current && scroll_to_current {
+                    response.scroll_to_me(Some(egui::Align::Center));
+                }
                 if response.clicked() {
                     pick = Some((entry.index, current));
                 }
@@ -1198,7 +1289,7 @@ impl EditorApp {
             ui.label(RichText::new(format!("No presets in {}", dir.display())).color(theme::TEXT_DIM));
         }
         let mut action = None;
-        egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(list_height(ui)).show(ui, |ui| {
             let mut folder = None;
             for entry in &self.library.entries {
                 if folder != Some(&entry.folder) {
@@ -1503,6 +1594,7 @@ impl EditorApp {
         // preset ends what can be undone.
         if !same_preset {
             self.history.clear();
+            self.scroll_to_current = true;
         }
         let keep = same_preset && self.selected_block.as_ref().is_some_and(|k| hlx.blocks().iter().any(|b| &b.key == k));
         let placed = self.select_after_load.take().and_then(|(path, position)| hlx.blocks().into_iter().find(|b| b.path == path && b.position == position));
@@ -1564,30 +1656,15 @@ impl EditorApp {
             ui.label(RichText::new("The models are listed once HX Edit's model data is imported.").color(theme::TEXT_DIM));
             return;
         };
-        Frame::new().fill(theme::BG).corner_radius(CornerRadius::same(255)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search models").frame(Frame::NONE).desired_width(f32::INFINITY));
-        });
-        ui.add_space(10.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            // Each chip is one widget of its own size, so the row wraps inside the panel; a framed
-            // group of a dot and a label did not wrap and stretched the panel past the window.
-            for (i, cat) in catalog.categories().iter().enumerate().skip(1) {
-                let active = i == self.selected_category;
-                let text = if active { theme::TEXT } else { theme::TEXT_DIM };
-                let galley = ui.painter().layout_no_wrap(cat.name.clone(), theme::semibold(12.0), text);
-                let size = vec2(galley.size().x + 12.0 + 7.0 + 6.0 + 12.0, galley.size().y + 14.0);
-                let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-                response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, &cat.name));
-                ui.painter().rect_filled(rect, CornerRadius::same(255), if active { theme::RAISED_HI } else { theme::RAISED });
-                ui.painter().circle_filled(rect.left_center() + vec2(12.0 + 3.5, 0.0), 3.5, theme::from_rgb_u32(cat.color));
-                ui.painter().galley(rect.left_center() + vec2(12.0 + 7.0 + 6.0, -galley.size().y / 2.0), galley, text);
-                if response.clicked() {
-                    self.selected_category = i;
-                }
-            }
-        });
-        ui.add_space(10.0);
+        let search = search_field(ui, &mut self.search, "Search models");
+        if std::mem::take(&mut self.focus_search) {
+            search.request_focus();
+        }
+        ui.add_space(8.0);
+        if let Some(i) = category_picker(ui, catalog, self.selected_category) {
+            self.selected_category = i;
+        }
+        ui.add_space(8.0);
         let current = self.selected_block.as_ref().and_then(|key| {
             self.preset.as_ref().and_then(|p| p.blocks().into_iter().find(|b| &b.key == key)).map(|b| b.model)
         });
@@ -1627,7 +1704,7 @@ impl EditorApp {
         }
         let mut clicked = None;
         let picked_id = chosen.as_ref().map(|(_, id, _)| id.clone());
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(list_height(ui)).show(ui, |ui| {
             let mut row = |ui: &mut Ui, id: &String, stereo: bool| {
                 let click = model_row(ui, &name_of(id), current.as_ref() == Some(id), picked_id.as_ref() == Some(id), pickable);
                 if click != RowClick::None {
@@ -1673,6 +1750,43 @@ impl EditorApp {
             self.choose_model(&id, stereo);
         }
     }
+}
+
+/// What a click in the top bar asked for.
+enum TopAction {
+    Save,
+    Snapshot(usize),
+    BackToPedal,
+    Send(std::path::PathBuf, String),
+}
+
+/// The preset's snapshots as a row of numbered buttons, the current one lit; the one clicked, when
+/// they can be switched.
+fn snapshot_switch(ui: &mut Ui, preset: &Preset, enabled: bool) -> Option<usize> {
+    let names = preset.snapshot_names();
+    if names.len() < 2 {
+        return None;
+    }
+    let current = preset.current_snapshot();
+    let mut picked = None;
+    Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(255)).inner_margin(Margin::same(4)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (i, name) in names.iter().enumerate() {
+                let active = i == current;
+                let (rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), if enabled { Sense::click() } else { Sense::hover() });
+                response.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, enabled, active, format!("Snapshot {}: {name}", i + 1)));
+                let fill = if active { theme::ACCENT } else if enabled && response.hovered() { theme::RAISED_HI } else { theme::RAISED };
+                ui.painter().rect_filled(rect, CornerRadius::same(255), fill);
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, (i + 1).to_string(), mono(13.0), if active { theme::BG } else { theme::TEXT_MID });
+                let shortcut = if i < 9 { format!(" (Alt+{})", i + 1) } else { String::new() };
+                if response.on_hover_text(format!("Snapshot {}: {name}{shortcut}", i + 1)).clicked() && !active {
+                    picked = Some(i);
+                }
+            }
+        });
+    });
+    picked
 }
 
 /// What a click in the library list asked for.
@@ -1763,6 +1877,29 @@ fn pill(ui: &mut Ui, add: impl FnOnce(&mut Ui)) -> egui::Response {
         .response
 }
 
+/// A rounded search field filling the width.
+fn search_field(ui: &mut Ui, text: &mut String, hint: &str) -> egui::Response {
+    Frame::new()
+        .fill(theme::BG)
+        .corner_radius(CornerRadius::same(255))
+        .inner_margin(Margin::symmetric(14, 10))
+        .show(ui, |ui| ui.add(egui::TextEdit::singleline(text).hint_text(hint).frame(Frame::NONE).desired_width(f32::INFINITY)))
+        .inner
+}
+
+/// A ring around a row or button that has the keyboard focus.
+fn focus_ring(ui: &Ui, rect: Rect, response: &egui::Response) {
+    if response.has_focus() {
+        ui.painter().rect_stroke(rect.expand(1.0), CornerRadius::same(11), Stroke::new(2.0, theme::TEXT_MID), StrokeKind::Outside);
+    }
+}
+
+/// The height a list in the side card may take: the rest of the card, but never less than a few
+/// rows.
+fn list_height(ui: &Ui) -> f32 {
+    ui.available_height().max(180.0)
+}
+
 /// "1 preset", "3 presets".
 fn presets(n: usize) -> String {
     if n == 1 { "1 preset".to_owned() } else { format!("{n} presets") }
@@ -1802,6 +1939,57 @@ fn segmented<T: Copy + PartialEq>(ui: &mut Ui, value: &mut T, options: &[(T, &st
             }
         });
     });
+}
+
+/// Categories whose models are part of every chain or not blocks at all, so none can be put in a
+/// slot.
+const NOT_INSERTABLE: [&str; 5] = ["Input", "Output", "Split", "Merge", "Connected Devices"];
+
+/// The models list's category as a drop-down; the index of the one picked.
+fn category_picker(ui: &mut Ui, catalog: &Catalog, selected: usize) -> Option<usize> {
+    let shown: Vec<(usize, &nx_catalog::Category)> = catalog
+        .categories()
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, c)| !c.model_ids.is_empty() && !NOT_INSERTABLE.contains(&c.name.as_str()))
+        .collect();
+    let current = catalog.categories().get(selected);
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
+    let name = current.map_or("Category", |c| c.name.as_str());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, format!("Category: {name}")));
+    let hot = response.hovered();
+    ui.painter().rect_filled(rect, CornerRadius::same(255), if hot { theme::RAISED_HI } else { theme::RAISED });
+    focus_ring(ui, rect, &response);
+    if let Some(cat) = current {
+        ui.painter().circle_filled(rect.left_center() + vec2(18.0, 0.0), 4.5, theme::from_rgb_u32(cat.color));
+    }
+    ui.painter().text(rect.left_center() + vec2(32.0, 0.0), Align2::LEFT_CENTER, name, theme::semibold(14.0), theme::TEXT);
+    chevron(ui.painter(), rect.right_center() - vec2(20.0, 0.0), theme::TEXT_DIM);
+    let frame = Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(12)).stroke(Stroke::new(1.0, theme::RAISED_HI)).inner_margin(Margin::same(6));
+    let mut picked = None;
+    egui::Popup::menu(&response).align(egui::RectAlign::BOTTOM_START).width(rect.width()).gap(4.0).frame(frame).show(|ui| {
+        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (i, cat) in shown {
+                let active = i == selected;
+                let (row, clicked) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+                clicked.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, active, &cat.name));
+                if active {
+                    ui.painter().rect_filled(row, CornerRadius::same(8), theme::RAISED_HI);
+                } else if clicked.hovered() {
+                    ui.painter().rect_filled(row, CornerRadius::same(8), theme::RAISED);
+                }
+                ui.painter().circle_filled(row.left_center() + vec2(14.0, 0.0), 4.0, theme::from_rgb_u32(cat.color));
+                let color = if active { theme::ACCENT } else { theme::TEXT_MID };
+                ui.painter().text(row.left_center() + vec2(28.0, 0.0), Align2::LEFT_CENTER, &cat.name, theme::regular(14.0), color);
+                if clicked.clicked() {
+                    picked = Some(i);
+                }
+            }
+        });
+    });
+    picked
 }
 
 /// What a click on a model in the models list asked for.
@@ -2232,9 +2420,7 @@ impl eframe::App for EditorApp {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
         }
         egui::Panel::top("top").frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| {
-            if self.top_bar(ui) {
-                self.save();
-            }
+            self.top_bar(ui);
         });
         egui::Panel::left("rail")
             .exact_size(76.0)
@@ -2257,8 +2443,10 @@ impl eframe::App for EditorApp {
                 return;
             }
             let lanes = self.preset.as_ref().map(|p| lanes(p, self.catalog.as_ref())).unwrap_or_default();
+            let viewport = ui.available_height();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = GAP;
+                let top = ui.cursor().top();
                 if self.connection.is_none() {
                     self.lost_banner(ui);
                 }
@@ -2269,15 +2457,19 @@ impl eframe::App for EditorApp {
                     self.nothing_open(ui);
                 }
                 self.chain_card(ui, &lanes);
+                // The block editor and the side card share the rest of the window, each scrolling
+                // its own content; only a window too small for that scrolls as a whole.
+                let rest = (viewport - (ui.cursor().top() - top)).max(MIN_BOTTOM);
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = GAP;
                     let editor_w = (ui.available_width() - SIDE_W - GAP).max(320.0);
-                    ui.allocate_ui_with_layout(vec2(editor_w, ui.available_height()), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.allocate_ui_with_layout(vec2(editor_w, rest), egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_width(editor_w);
-                        self.editor_card(ui, &lanes);
+                        egui::ScrollArea::vertical().id_salt("block-editor").max_height(rest).show(ui, |ui| self.editor_card(ui, &lanes));
                     });
-                    ui.allocate_ui_with_layout(vec2(SIDE_W, ui.available_height()), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.allocate_ui_with_layout(vec2(SIDE_W, rest), egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_width(SIDE_W);
+                        ui.set_height(rest);
                         self.side_card(ui);
                     });
                 });
@@ -2781,6 +2973,50 @@ mod pedal_tests {
         app.history.redo(&[]);
         app.apply_loaded(Loaded { generation: 2, preset: crate::device::DevicePreset { name: "Other".into(), index: Some(5), document, modified: false } });
         assert!(app.history.undo(&[]).is_none(), "another preset starts afresh");
+    }
+
+    #[test]
+    fn the_top_bar_switches_snapshots_and_alt_and_a_number_does_too() {
+        let Some((app, device)) = on_nx_test(false) else { return };
+        let mut harness = harness_on(app);
+        harness.get_by_label_contains("Snapshot 2:").click();
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num3);
+        harness.run();
+        let switched = sent_once(&device, |r| matches!(r, Request::SelectSnapshot { .. }), 2);
+        assert_eq!(switched, [Request::SelectSnapshot { index: 1 }, Request::SelectSnapshot { index: 2 }]);
+    }
+
+    #[test]
+    fn a_library_file_offers_the_way_back_to_the_pedal() {
+        let Some((mut app, _device)) = on_nx_test(false) else { return };
+        let dir = std::env::temp_dir().join(format!("nx-view-{}-back", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Mark_Lead.hlx");
+        std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-hlx/tests/fixtures/Mark_Lead.hlx"), &file).unwrap();
+        app.open_file(file);
+        let mut harness = harness_on(app);
+        harness.get_by_label("Back to the pedal").click();
+        harness.run();
+        assert!(harness.state().showing_file.is_none());
+        assert_eq!(harness.state().preset.as_ref().unwrap().name(), "NX Test");
+    }
+
+    #[test]
+    fn the_presets_list_is_narrowed_by_its_search_field() {
+        let Some((mut app, _device)) = on_nx_test(true) else { return };
+        app.connection.as_mut().unwrap().presets = ["Recto DM", "5150 DM", "Revv DM", "Mark Lead", "Revv Home", "New Preset", "NX Test"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| nx_proto::PresetEntry { index: i as u64, name: (*n).into() })
+            .collect();
+        app.preset_filter = "revv".into();
+        let mut harness = harness_on(app);
+        harness.get_by_label("01C Revv DM");
+        assert!(harness.query_by_label("01A Recto DM").is_none());
+        harness.state_mut().preset_filter = "03a".into();
+        harness.run();
+        harness.get_by_label("03A NX Test, edited");
     }
 
     #[test]
