@@ -180,7 +180,7 @@ impl CustomToneView {
             if self.busy > 0 {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(14.0).color(theme::ACCENT));
-                    ui.label(RichText::new("Loading…").color(theme::TEXT_DIM));
+                    ui.label(RichText::new("Loading from CustomTone…").color(theme::TEXT_DIM));
                 });
             }
             self.list(ui);
@@ -367,7 +367,7 @@ impl CustomToneView {
                                 if can_download && ui.button("Download to library").clicked() {
                                     download = Some((tone.id, false));
                                 }
-                                if can_download && ui.button("Download and assign to the pedal…").clicked() {
+                                if can_download && ui.button("Download and send to the pedal…").clicked() {
                                     download = Some((tone.id, true));
                                 }
                                 dot(ui, theme::ACCENT, 8.0);

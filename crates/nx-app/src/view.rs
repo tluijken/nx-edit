@@ -1290,13 +1290,19 @@ impl EditorApp {
             return;
         }
         let name = self.preset.as_ref().map_or_else(String::new, |p| p.name().to_owned());
+        let quitting = matches!(self.leaving, Some(Leave::Quit));
         let (question, detail) = match self.connection.as_ref().and_then(|c| c.current).filter(|_| self.showing_file.is_none()) {
+            Some(index) if quitting => (
+                format!("Save the changes to {name} at {} before quitting?", nx_proto::slot_label(index)),
+                "Otherwise they stay in the pedal's edit buffer until it switches presets, and are gone then.",
+            ),
             Some(index) => (
                 format!("Save the changes to {name} at {}?", nx_proto::slot_label(index)),
                 "They are only in the pedal's edit buffer; switching presets drops them, as a footswitch does.",
             ),
             None => (format!("Save the changes to {name}?"), "They are only in nx-edit; the library file still has the old version."),
         };
+        let (save_label, discard_label) = if quitting { ("Save and quit", "Quit without saving") } else { ("Save and continue", "Discard") };
         let mut choice = None;
         let frame = Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(18)).inner_margin(Margin::same(24));
         let modal = egui::Modal::new(egui::Id::unique("unsaved-changes")).frame(frame).show(ctx, |ui| {
@@ -1310,10 +1316,10 @@ impl EditorApp {
                     let button = if primary { egui::Button::new(label.color(theme::BG)).fill(theme::ACCENT) } else { egui::Button::new(label) };
                     button.corner_radius(CornerRadius::same(255)).min_size(vec2(100.0, 40.0))
                 };
-                if ui.add(button("Save and continue", true)).clicked() {
+                if ui.add(button(save_label, true)).clicked() {
                     choice = Some(true);
                 }
-                if ui.add(button("Discard", false)).clicked() {
+                if ui.add(button(discard_label, false)).clicked() {
                     choice = Some(false);
                 }
                 if ui.add(button("Cancel", false)).clicked() {
@@ -1356,7 +1362,7 @@ impl EditorApp {
         match built {
             Ok(document) => {
                 connection.live.assign(0, place, &assign.name, document);
-                self.notices.info(format!("Assigning \"{}\" to {}…", assign.name, nx_proto::slot_label(place)));
+                self.notices.info(format!("Sending \"{}\" to {}…", assign.name, nx_proto::slot_label(place)));
                 self.assigning = None;
             }
             Err(e) => assign.error = Some(format!("Cannot send this preset: {e}")),
@@ -1398,7 +1404,7 @@ impl EditorApp {
         let modal = egui::Modal::new(egui::Id::unique("assign-to-place")).frame(frame).show(ctx, |ui| {
             ui.set_width(480.0);
             ui.spacing_mut().item_spacing.y = 12.0;
-            ui.label(RichText::new(format!("Assign \"{}\" to a place", assign.name)).font(theme::semibold(20.0)));
+            ui.label(RichText::new(format!("Send \"{}\" to a place on the pedal", assign.name)).font(theme::semibold(20.0)));
             let folder = assign.folder();
             if !folder.is_empty() {
                 ui.label(RichText::new(format!("From the library folder \"{folder}\"")).font(theme::regular(12.0)).color(theme::TEXT_DIM));
@@ -1479,9 +1485,16 @@ impl EditorApp {
                 open_in_file_manager(&dir);
             }
         });
-        ui.label(RichText::new("Drop .hlx files on the window to add them. Right-click a preset to rename or delete it.").font(theme::regular(12.0)).color(theme::TEXT_DIM));
+        ui.label(
+            RichText::new("Drop .hlx files on the window to add them. Right-click a preset to send it to the pedal, rename it or move it to the library trash.")
+                .font(theme::regular(12.0))
+                .color(theme::TEXT_DIM),
+        );
         if self.library.entries.is_empty() {
-            ui.label(RichText::new(format!("No presets in {}", dir.display())).color(theme::TEXT_DIM));
+            ui.label(
+                RichText::new("The library is empty. Drop .hlx files on the window, download tones from CustomTone (the cloud on the left), or put files in its folder (Open folder).")
+                    .color(theme::TEXT_MID),
+            );
         }
         let mut action = None;
         egui::ScrollArea::vertical().max_height(list_height(ui)).show(ui, |ui| {
@@ -1521,7 +1534,7 @@ impl EditorApp {
                     action = Some(LibraryAction::Open(entry.path.clone()));
                 }
                 response.context_menu(|ui| {
-                    if ui.button("Assign to a place on the pedal…").clicked() {
+                    if ui.button("Send to the pedal…").clicked() {
                         action = Some(LibraryAction::Assign(entry.path.clone(), entry.name.clone()));
                         ui.close();
                     }
@@ -2684,7 +2697,8 @@ impl eframe::App for EditorApp {
         self.take_dropped_files(ui.ctx());
         self.edit_keys(ui.ctx());
         let ctx = ui.ctx().clone();
-        if ctx.input(|i| i.viewport().close_requested()) && self.unsaved && !self.closing {
+        let pedal_edits = self.showing_file.is_none() && self.can_save();
+        if ctx.input(|i| i.viewport().close_requested()) && (self.unsaved || pedal_edits) && !self.closing {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.leaving = Some(Leave::Quit);
         }
@@ -3133,6 +3147,18 @@ mod pedal_tests {
         }
         assert_eq!(saves(&device), [Request::SavePreset { setlist: 0, index: 6, name: "NX Test".into() }]);
         assert_eq!(app.notices.last(), "Saved to 03A");
+    }
+
+    #[test]
+    fn quitting_with_unsaved_pedal_edits_asks_first() {
+        let Some((app, _device)) = on_nx_test(true) else { return };
+        let mut harness = harness_on(app);
+        harness.state_mut().leaving = Some(Leave::Quit);
+        harness.run();
+        harness.get_by_label("Save the changes to NX Test at 03A before quitting?");
+        harness.get_by_label("Quit without saving").click();
+        harness.step();
+        assert!(harness.state().closing);
     }
 
     #[test]

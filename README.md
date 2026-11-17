@@ -18,25 +18,29 @@ Windows 11 VM.
 
 ## What it does
 
-- Reads the current preset from the pedal and draws its signal chain, including path B splits and
-  joins.
+- Finds the pedal by itself when it is plugged in, reconnects after it was unplugged, and reads
+  its current preset and signal chain, including path B splits and joins.
 - Turns knobs by dragging (Shift for fine steps), with the mouse wheel or the arrow keys, resets
-  them with a double-click and takes typed values (Enter or right-click). Picks list values such as a cab's mic by name, flips switches and a delay's or
-  reverb's trails, switches blocks on and off and changes snapshots on the pedal. It follows edits
-  made on the pedal itself, and undo and redo work for knob turns. A snapshot's footswitch LED colour
-  is picked from the dot beside it. Save (Ctrl+S) stores the edits in
-  the preset's own place on the pedal, and nx-edit asks before a preset switch would drop them.
-- Edits the pedal's chain on path A: click an empty slot and pick a model to add a block, pick a
-  model with a block selected and confirm to change it, remove a block from its context menu, or
-  drag it to another position. Undo and redo cover these chain edits too.
-- Lists the pedal's presets and follows preset switches.
+  them with a double-click and takes typed values (Enter or right-click). Picks list values such as
+  a cab's mic by name, flips switches and a delay's or reverb's trails, and switches blocks on and
+  off. It follows edits made on the pedal itself.
+- Switches snapshots from the top bar or with Alt+1, 2, 3, renames them (double-click) and picks
+  each one's footswitch LED colour from the dot beside it.
+- Edits the pedal's chain: click an empty slot of path A and pick a model to add a block; change a
+  block's model (confirmed before it is replaced), move it along path A, or remove it from the
+  block editor, its context menu, by dragging or with Delete.
+- Undo and redo (Ctrl+Z, Ctrl+Shift+Z) cover knob turns and chain edits. Save (Ctrl+S) stores the
+  edits in the preset's own place on the pedal, and nx-edit asks before a preset switch or quitting
+  would leave them unsaved.
+- Lists the pedal's presets, searchable, and follows preset switches.
 - Keeps a library of `.hlx` files beside the pedal's list. You can drop files in, rename them and
   move them to the trash. Library presets can be edited offline and saved (Ctrl+S); nx-edit asks
   before it drops unsaved edits.
 - Browses CustomTone, signs in to line6.com and downloads tones into the library.
-- Puts a library or CustomTone preset on a place of the pedal ("Assign to a place on the pedal…"
-  in the library's context menu), written as HX Edit writes an import. Amps with a cab, dual cabs,
-  returns, FX loops and other blocks whose engine number has not been captured are refused by name.
+- Sends a library or CustomTone preset to a place of the pedal ("Send to the pedal…" in the top bar
+  or the library's context menu), written as HX Edit writes an import. Amps with a cab, dual cabs,
+  returns, FX loops and other blocks whose engine number has not been captured are refused by name
+  when the dialog opens.
 
 ## Not yet
 
