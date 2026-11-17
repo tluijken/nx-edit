@@ -655,4 +655,15 @@ mod tests {
         assert_eq!(delay.name_of(Param::Extra(0)), Some("@trails"));
         assert_eq!(addresses["block2"].target("@trails"), None, "the amp has no trails");
     }
+
+    #[test]
+    fn a_looper_shows_in_the_chain_and_can_be_addressed() {
+        let Some(syms) = helix_sym() else { return };
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/31-looper.doc");
+        let preset = DevicePreset { name: "New Preset".into(), index: Some(9), document: std::fs::read(path).unwrap(), modified: false };
+        let blocks = preset.to_hlx(&syms).unwrap().blocks();
+        let looper = blocks.iter().find(|b| b.model == "HD2_LooperOneSwitch").expect("the looper is in the .hlx");
+        assert_eq!((looper.path, looper.position), (0, 1));
+        assert_eq!(preset.addresses(&syms).unwrap()[&looper.key].slot, 2);
+    }
 }

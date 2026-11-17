@@ -141,7 +141,7 @@ impl Document {
         let (kind, body) = self.slot_body_mut(slot)?;
         let values = match kind {
             KIND_BLOCK => body.get_mut(11),
-            KIND_INPUT | KIND_OUTPUT => body.get_mut(7),
+            KIND_INPUT | KIND_OUTPUT | KIND_LOOPER => body.get_mut(7),
             KIND_SPLIT => body.get_mut(15).and_then(|j| j.get_mut(7)),
             KIND_JOIN => body.get_mut(17).and_then(|j| j.get_mut(7)),
             _ => None,
@@ -160,7 +160,7 @@ impl Document {
     pub fn set_enabled(&mut self, slot: usize, enabled: bool) -> Result<(), DocError> {
         let (kind, body) = self.slot_body_mut(slot)?;
         let flag = match kind {
-            KIND_BLOCK => body.get_mut(10),
+            KIND_BLOCK | KIND_LOOPER => body.get_mut(10),
             KIND_SPLIT => body.get_mut(15).and_then(|j| j.get_mut(10)),
             KIND_JOIN => body.get_mut(17).and_then(|j| j.get_mut(10)),
             _ => None,
@@ -233,7 +233,7 @@ impl Document {
         }
         for slot in [a, b] {
             let (kind, _) = self.slot_body_mut(slot)?;
-            if kind != KIND_BLOCK && kind != KIND_EMPTY {
+            if ![KIND_BLOCK, KIND_LOOPER, KIND_EMPTY].contains(&kind) {
                 return Err(DocError::Value(format!("slot {slot} holds neither a block nor nothing")));
             }
         }
@@ -322,6 +322,8 @@ const KIND_OUTPUT: i64 = 1;
 const KIND_SPLIT: i64 = 2;
 const KIND_JOIN: i64 = 3;
 const KIND_BLOCK: i64 = 6;
+/// A looper: `{8: model, 9: engine 22, 10: enabled, 7: values}` [seen, capture 31].
+const KIND_LOOPER: i64 = 7;
 const KIND_EMPTY: i64 = 8;
 
 /// A parameter value. Floats are in the model's own units (Drive 0..1, a frequency in Hz).
@@ -419,9 +421,9 @@ pub struct Block {
     /// On or off in the current state, which follows the active snapshot.
     pub enabled: bool,
     pub values: Values,
-    /// Key 12, empty in every captured block.
+    /// Key 12: the cab's values when the block is an amp with a cab, empty otherwise.
     pub extra: Values,
-    /// Key 24 as read: `{23: false, 25: model, 26: -1}`; 23 and 26 are not understood.
+    /// Key 24 as read: `{23: amp with cab, 25: model, 26: cab or -1}`; nil for a looper.
     pub header: Item,
 }
 
@@ -599,6 +601,14 @@ fn slot(item: &Item, index: usize) -> Result<SlotKind, DocError> {
                 header: header.clone(),
             })
         }
+        KIND_LOOPER => SlotKind::Block(Block {
+            model: int_at(body, 8, &what)? as u32,
+            engine: int_at(body, 9, &what)?,
+            enabled: bool_at(body, 10, &what)?,
+            values: values(field(body, 7, &what)?, &what)?,
+            extra: Values { count: 0, params: 0, values: Vec::new() },
+            header: Item::Nil,
+        }),
         KIND_EMPTY => SlotKind::Empty,
         kind => SlotKind::Unknown { kind, body: body.clone() },
     })

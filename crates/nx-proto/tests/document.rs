@@ -584,3 +584,25 @@ fn only_block_slots_of_one_path_swap() {
     assert!(doc.swap_slots(3, 17).is_err(), "slot 17 is on path B");
     assert!(doc.swap_slots(17, 11).is_ok(), "both on path B");
 }
+
+/// 04A in capture 31 after its second block became a 1 Switch Looper (slot kind 7).
+#[test]
+fn a_looper_is_read_as_a_block() {
+    let doc = Document::decode(&document("31-looper")).unwrap();
+    let preset = doc.preset().unwrap();
+    let looper = preset.blocks().find(|b| b.slot == 2).expect("the looper is a block of path A");
+    assert_eq!((looper.block.model, looper.block.engine, looper.block.enabled), (504, 22, false));
+    assert_eq!(looper.block.values.values.len(), 4);
+}
+
+#[test]
+fn a_looper_is_switched_and_set_like_a_block() {
+    let mut doc = Document::decode(&document("31-looper")).unwrap();
+    doc.set_enabled(2, true).unwrap();
+    doc.set_param(2, 2, nx_proto::ParamValue::Float(30.0)).unwrap();
+    let preset = doc.preset().unwrap();
+    let looper = preset.blocks().find(|b| b.slot == 2).unwrap();
+    assert!(looper.block.enabled);
+    assert_eq!(looper.block.values.values[2], nx_proto::ParamValue::Float(30.0));
+    doc.swap_slots(2, 5).unwrap();
+}
