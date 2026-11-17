@@ -1,0 +1,59 @@
+id: io.github.tluijken.NxEdit
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: nx-edit
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=all
+  # CustomTone sign-in and downloads.
+  - --share=network
+  # The Line 6 password is kept in the desktop's Secret Service.
+  - --talk-name=org.freedesktop.secrets
+  # --import-hxedit reads the HX Edit installer, which users download to here.
+  - --filesystem=xdg-download:ro
+modules:
+  # --import-hxedit unpacks the HX Edit installer with 7z.
+  - name: 7zip
+    buildsystem: simple
+    build-commands:
+      - make -C CPP/7zip/Bundles/Alone2 -f makefile.gcc -j${FLATPAK_BUILDER_N_JOBS}
+      - install -Dm755 CPP/7zip/Bundles/Alone2/_o/7zz /app/bin/7zz
+      - ln -s 7zz /app/bin/7z
+      - install -Dm644 DOC/License.txt /app/share/licenses/io.github.tluijken.NxEdit/7zip-License.txt
+    sources:
+      - type: archive
+        url: https://github.com/ip7z/7zip/releases/download/26.06/7z2606-src.tar.xz
+        sha256: a4e374c8f864f51df48c2cfd0e1413ec3b2ea030deae852d6a655402ebb61ac4
+        strip-components: 0
+
+  - name: nx-edit
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/nx-edit/cargo
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo build --release --locked --offline -p nx-app
+      - install -Dm755 target/release/nx-edit /app/bin/nx-edit
+      - install -Dm644 io.github.tluijken.NxEdit.desktop /app/share/applications/io.github.tluijken.NxEdit.desktop
+      - install -Dm644 io.github.tluijken.NxEdit.metainfo.xml /app/share/metainfo/io.github.tluijken.NxEdit.metainfo.xml
+      - install -Dm644 io.github.tluijken.NxEdit.svg /app/share/icons/hicolor/scalable/apps/io.github.tluijken.NxEdit.svg
+    sources:
+      - type: archive
+        url: https://github.com/tluijken/nx-edit/archive/refs/tags/v0.1.0.tar.gz
+        sha256: 72732fdc9bbe5b71b0a3daaacd8351b4914baa0c4284d32f7f867a6c858b02fa
+      - cargo-sources.json
+      # v0.1.0's source archive predates packaging/.
+      - type: file
+        path: ../io.github.tluijken.NxEdit.desktop
+      - type: file
+        path: ../io.github.tluijken.NxEdit.metainfo.xml
+      - type: file
+        path: ../../assets/nx-edit.svg
+        dest-filename: io.github.tluijken.NxEdit.svg
