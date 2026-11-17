@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.tluijken.NxEdit</id>
+  <name>nx-edit</name>
+  <summary>Edit the presets of a Line 6 HX Stomp</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.tluijken">
+    <name>Thomas Luijken</name>
+  </developer>
+  <description>
+    <p>
+      nx-edit is a native editor for the Line 6 HX Stomp. It speaks the pedal's USB protocol
+      directly, as Line 6 offers no HX Edit for Linux.
+    </p>
+    <ul>
+      <li>Reads the current preset from the pedal and draws its signal chain, including path B splits and joins</li>
+      <li>Turns knobs, picks list values, switches blocks on and off and changes snapshots on the pedal</li>
+      <li>Saves edits in the preset's own place on the pedal</li>
+      <li>Keeps a library of .hlx preset files that can be edited offline</li>
+      <li>Browses CustomTone, signs in to line6.com and downloads tones into the library</li>
+    </ul>
+    <p>
+      Block and parameter names come from HX Edit's own model data, which nx-edit does not ship.
+      It is imported once from the official HX Edit installer or an installed HX Edit.
+    </p>
+    <p>
+      nx-edit is not affiliated with or endorsed by Line 6 or Yamaha. HX Stomp, HX Edit and
+      CustomTone are their trademarks.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.tluijken.NxEdit.desktop</launchable>
+  <provides>
+    <binary>nx-edit</binary>
+    <modalias>usb:v0E41p4246d*</modalias>
+  </provides>
+  <url type="homepage">https://github.com/tluijken/nx-edit</url>
+  <url type="bugtracker">https://github.com/tluijken/nx-edit/issues</url>
+  <url type="vcs-browser">https://github.com/tluijken/nx-edit</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>A preset's signal chain with a block's parameters</caption>
+      <image>https://raw.githubusercontent.com/tluijken/nx-edit/v0.1.0/docs/nx-edit-design.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+  </categories>
+  <keywords>
+    <keyword>Line 6</keyword>
+    <keyword>Helix</keyword>
+    <keyword>HX Stomp</keyword>
+    <keyword>preset</keyword>
+    <keyword>guitar</keyword>
+  </keywords>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-info">mild</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="0.1.0" date="2026-11-17">
+      <url type="details">https://github.com/tluijken/nx-edit/releases/tag/v0.1.0</url>
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>
