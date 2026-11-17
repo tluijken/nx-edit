@@ -13,6 +13,24 @@ pub struct Assign {
     pub filter: String,
     /// Why the preset could not be sent, shown in the dialog.
     pub error: Option<String>,
+    /// The document to send, or why there is none, once checked against the pedal.
+    pub checked: Option<Result<Vec<u8>, String>>,
+}
+
+impl Assign {
+    pub fn new(file: PathBuf, name: String) -> Self {
+        Self { file, name, place: None, filter: String::new(), error: None, checked: None }
+    }
+
+    /// Where the file is, as the library shows it: its folder's name.
+    pub fn folder(&self) -> String {
+        self.file.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+}
+
+/// A place holding the pedal's empty preset, which is safe to replace.
+pub fn is_empty(place: &PresetEntry) -> bool {
+    place.name == "New Preset"
 }
 
 /// The places whose label ("03B") or current name contains `filter`, ignoring case.
@@ -56,6 +74,17 @@ mod tests {
         assert_eq!(labels(places(&list(), "revv")), ["01C", "02B"]);
         assert_eq!(labels(places(&list(), "new preset")), ["02C", "03A"]);
         assert!(places(&list(), "Fear Factory").is_empty());
+    }
+
+    #[test]
+    fn an_empty_place_holds_new_preset() {
+        let empty: Vec<String> = list().iter().filter(|p| is_empty(p)).map(|p| slot_label(p.index)).collect();
+        assert_eq!(empty, ["02C", "03A"]);
+    }
+
+    #[test]
+    fn the_folder_is_shown_instead_of_the_whole_path() {
+        assert_eq!(Assign::new("/home/u/.local/share/nx-edit/library/customtone/BE100.hlx".into(), "BE100".into()).folder(), "customtone");
     }
 
     #[test]

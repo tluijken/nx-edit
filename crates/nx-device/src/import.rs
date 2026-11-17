@@ -173,6 +173,11 @@ struct Models<'a> {
 }
 
 impl Models<'_> {
+    /// A model's name as HX Edit shows it, or its id when the catalog does not know it.
+    fn name(&self, id: &str) -> String {
+        self.catalog.model(id).and_then(|m| m.name.clone()).unwrap_or_else(|| id.to_owned())
+    }
+
     fn number(&self, id: &str, stereo: bool, what: &str) -> Result<u32, String> {
         self.syms.number_for(id, stereo).ok_or_else(|| format!("{what}: {id} is not in HX Edit's Helix.sym"))
     }
@@ -180,13 +185,19 @@ impl Models<'_> {
     /// A block's slot, body, slot kind and the parameter names its values follow.
     fn block(&self, key: &str, block: &Value) -> Result<(usize, Item, i64, Vec<String>), String> {
         let id = block["@model"].as_str().ok_or_else(|| format!("{key} has no @model"))?;
-        if block.get("@cab").is_some() || id.contains("DualCab") || id.contains("CabMicIrDual") {
-            return Err(format!("{key} ({id}) is an amp with a cab or a dual cab, which nx-edit cannot put on the pedal yet"));
+        let name = self.name(id);
+        if block.get("@cab").is_some() {
+            return Err(format!(
+                "{name} with its cab cannot be sent to the pedal yet. In HX Edit, give it a cab block of its own, or pick another preset."
+            ));
+        }
+        if id.contains("DualCab") || id.contains("CabMicIrDual") {
+            return Err(format!("{name} is a dual cab, which nx-edit cannot send to the pedal yet."));
         }
         let position = usize::try_from(block["@position"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
         let path = block["@path"].as_u64().unwrap_or(0);
         if position >= PATH_POSITIONS || path > 1 {
-            return Err(format!("{key} sits at path {path}, position {position}, outside the HX Stomp's chain"));
+            return Err(format!("{name} sits outside the HX Stomp's chain (path {path}, position {position})."));
         }
         let at = if path == 1 { SPLIT_SLOT + 1 + position } else { 1 + position };
         let number = self.number(id, block["@stereo"].as_bool().unwrap_or(false), key)?;
@@ -194,7 +205,7 @@ impl Models<'_> {
         let def = self.catalog.model(shared_id(symbol));
         let category = def.and_then(|d| d.category);
         let engine = nx_catalog::engine(category, symbol)
-            .ok_or_else(|| format!("{key} ({id}) is a kind of block nx-edit has not seen the pedal store yet"))?;
+            .ok_or_else(|| format!("{name} is a kind of block nx-edit cannot put on the pedal yet."))?;
         // Helix.sym lists more than the document holds for some models (a cab's IrData), so the
         // values end with the last parameter the file has, as HX Edit's do [seen, 19].
         let mut params = self.params(number);
@@ -364,6 +375,7 @@ mod tests {
         raw["data"]["tone"]["dsp0"]["block2"]["@cab"] = "cab0".into();
         let file = nx_hlx::Preset::from_slice(&serde_json::to_vec(&raw).unwrap()).unwrap();
         let e = hlx_document(&file, &syms, &catalog, &firmware()).unwrap_err();
-        assert!(e.contains("block2") && e.contains("amp with a cab"), "{e}");
+        assert!(e.ends_with("with its cab cannot be sent to the pedal yet. In HX Edit, give it a cab block of its own, or pick another preset."), "{e}");
+        assert!(!e.contains("HD2_") && !e.contains("block2"), "named as HX Edit names it: {e}");
     }
 }

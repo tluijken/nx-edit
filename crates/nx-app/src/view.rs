@@ -1236,26 +1236,33 @@ impl EditorApp {
     }
 
     fn start_assign(&mut self, file: std::path::PathBuf, name: String) {
-        self.assigning = Some(crate::assign::Assign { file, name, place: None, filter: String::new(), error: None });
+        self.assigning = Some(crate::assign::Assign::new(file, name));
     }
 
-    /// Sends the file being assigned to its chosen place, written as HX Edit writes an import; the
-    /// dialog stays open with the reason when it cannot be.
-    fn send_assign(&mut self) {
-        let Some(assign) = self.assigning.as_mut() else { return };
-        let Some(place) = assign.place else { return };
-        let Some(connection) = self.connection.as_ref() else { return };
-        let built = (|| {
+    /// The document HX Edit would write for the file being assigned, or why there is none.
+    fn assign_document(&self) -> Option<Result<Vec<u8>, String>> {
+        let assign = self.assigning.as_ref()?;
+        let connection = self.connection.as_ref()?;
+        Some((|| {
             let catalog = self.catalog.as_ref().ok_or("HX Edit's model data is not imported yet")?;
             let bytes = std::fs::read(&assign.file).map_err(|e| format!("{}: {e}", assign.file.display()))?;
             let hlx = Preset::from_slice(&bytes).map_err(|e| e.to_string())?;
             let firmware = nx_proto::Document::decode(&connection.document).and_then(|d| d.preset()).map_err(|e| e.to_string())?.firmware;
             nx_device::import::hlx_document(&hlx, &connection.syms, catalog, &firmware)
-        })();
+        })())
+    }
+
+    /// Sends the file being assigned to its chosen place, written as HX Edit writes an import; the
+    /// dialog stays open with the reason when it cannot be.
+    fn send_assign(&mut self) {
+        let built = self.assign_document();
+        let Some(assign) = self.assigning.as_mut() else { return };
+        let Some(place) = assign.place else { return };
+        let (Some(connection), Some(built)) = (self.connection.as_ref(), built) else { return };
         match built {
             Ok(document) => {
                 connection.live.assign(0, place, &assign.name, document);
-                self.notices.info(format!("Sending \"{}\" to {}", assign.name, nx_proto::slot_label(place)));
+                self.notices.info(format!("Assigning \"{}\" to {}…", assign.name, nx_proto::slot_label(place)));
                 self.assigning = None;
             }
             Err(e) => assign.error = Some(format!("Cannot send this preset: {e}")),
@@ -1278,7 +1285,17 @@ impl EditorApp {
 
     /// Choosing the place on the pedal for a library preset, and saying what it replaces.
     fn assign_modal(&mut self, ctx: &egui::Context) {
+        if self.assigning.as_ref().is_some_and(|a| a.checked.is_none()) {
+            let checked = self.assign_document();
+            if let Some(assign) = self.assigning.as_mut() {
+                assign.checked = checked;
+            }
+        }
         let Some(assign) = self.assigning.as_mut() else { return };
+        let refused = match &assign.checked {
+            Some(Err(e)) => Some(e.clone()),
+            _ => None,
+        };
         let presets = self.connection.as_ref().map(|c| c.presets.as_slice()).unwrap_or_default();
         let mut close = false;
         let mut send = false;
@@ -1288,8 +1305,13 @@ impl EditorApp {
             ui.set_width(480.0);
             ui.spacing_mut().item_spacing.y = 12.0;
             ui.label(RichText::new(format!("Assign \"{}\" to a place", assign.name)).font(theme::semibold(20.0)));
-            ui.label(RichText::new(assign.file.display().to_string()).font(theme::regular(12.0)).color(theme::TEXT_DIM));
-            if presets.is_empty() {
+            let folder = assign.folder();
+            if !folder.is_empty() {
+                ui.label(RichText::new(format!("From the library folder \"{folder}\"")).font(theme::regular(12.0)).color(theme::TEXT_DIM));
+            }
+            if let Some(why) = &refused {
+                ui.label(RichText::new(format!("This preset cannot be sent: {why}")).font(theme::regular(14.0)).color(theme::ORANGE));
+            } else if presets.is_empty() {
                 ui.label(RichText::new("Connect the HX Stomp to choose one of its places.").font(theme::regular(14.0)).color(theme::TEXT_DIM));
             } else {
                 Frame::new().fill(theme::BG).corner_radius(CornerRadius::same(255)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
@@ -1309,8 +1331,18 @@ impl EditorApp {
                         let label = nx_proto::slot_label(entry.index);
                         ui.painter().text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, &label, mono(13.0), if chosen { theme::ACCENT } else { theme::TEXT_DIM });
                         ui.painter().text(rect.left_center() + vec2(60.0, 0.0), Align2::LEFT_CENTER, &entry.name, theme::regular(14.0), theme::TEXT_MID);
+                        let empty = crate::assign::is_empty(entry);
+                        if empty {
+                            ui.painter().text(rect.right_center() - vec2(14.0, 0.0), Align2::RIGHT_CENTER, "empty", theme::regular(12.0), theme::GREEN);
+                        }
+                        response.widget_info(|| {
+                            let state = if empty { ", empty" } else { "" };
+                            egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, chosen, format!("{label} {}{state}", entry.name))
+                        });
+                        focus_ring(ui, rect, &response);
                         if response.clicked() {
                             assign.place = Some(entry.index);
+                            assign.error = None;
                         }
                     }
                 });
@@ -1327,7 +1359,7 @@ impl EditorApp {
                     .fill(theme::ACCENT)
                     .corner_radius(CornerRadius::same(255))
                     .min_size(vec2(130.0, 40.0));
-                if ui.add_enabled(live && assign.place.is_some(), replace).clicked() {
+                if ui.add_enabled(live && assign.place.is_some() && refused.is_none() && assign.error.is_none(), replace).clicked() {
                     send = true;
                 }
                 let cancel = egui::Button::new(RichText::new("Cancel").font(theme::semibold(15.0))).corner_radius(CornerRadius::same(255)).min_size(vec2(100.0, 40.0));
@@ -3277,7 +3309,9 @@ mod assign_tests {
         let Some((mut connection, _device)) = super::pedal_tests::connection() else { return };
         connection.presets = (0..9).map(|i| nx_proto::PresetEntry { index: i, name: format!("Preset {i}") }).collect();
         let mut harness = editor(Some(connection));
-        harness.state_mut().assigning.as_mut().unwrap().place = Some(7);
+        let assign = harness.state_mut().assigning.as_mut().unwrap();
+        assign.place = Some(7);
+        assign.checked = Some(Ok(Vec::new()));
         harness.run();
         harness.get_by_label("03B \"Preset 7\" on the HX Stomp is replaced by \"BE100 CH1+2\". The preset now on 03B is gone unless it is in the library.");
         assert!(!harness.get_by_label("Replace 03B").accesskit_node().is_disabled());
@@ -3304,6 +3338,7 @@ mod assign_tests {
         assign.file = fixtures.join("../nx-hlx/tests/fixtures/Revv_Home.hlx");
         assign.name = "Revv Home".into();
         assign.place = Some(7);
+        assign.checked = None;
         harness.run();
         harness.get_by_label("Replace 03B").click();
         harness.run();
@@ -3323,15 +3358,48 @@ mod assign_tests {
     }
 
     #[test]
-    fn a_file_that_cannot_be_sent_keeps_the_dialog_open_with_the_reason() {
+    fn a_file_that_cannot_be_sent_says_why_before_a_place_is_chosen() {
         let Some((mut connection, _device)) = super::pedal_tests::connection() else { return };
         connection.presets = (0..9).map(|i| nx_proto::PresetEntry { index: i, name: format!("Preset {i}") }).collect();
+        let harness = editor(Some(connection));
+        harness.get_by_label_contains("This preset cannot be sent:");
+        assert!(harness.get_by_label("Replace").accesskit_node().is_disabled());
+    }
+
+    #[test]
+    fn an_amp_with_its_cab_is_refused_by_its_name_when_the_dialog_opens() {
+        let Some((mut connection, _device)) = super::pedal_tests::connection() else { return };
+        let Some(catalog) = res_catalog() else { return };
+        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        connection.document = std::fs::read(fixtures.join("../nx-proto/tests/fixtures/02-select-preset-01C.doc")).unwrap();
+        connection.presets = (0..9).map(|i| nx_proto::PresetEntry { index: i, name: "New Preset".into() }).collect();
+        let mut raw: serde_json::Value = serde_json::from_slice(&std::fs::read(fixtures.join("../nx-hlx/tests/fixtures/Revv_Home.hlx")).unwrap()).unwrap();
+        raw["data"]["tone"]["dsp0"]["block2"]["@cab"] = "cab0".into();
+        let file = std::env::temp_dir().join(format!("nx-assign-{}-cab.hlx", std::process::id()));
+        std::fs::write(&file, serde_json::to_vec(&raw).unwrap()).unwrap();
         let mut harness = editor(Some(connection));
-        harness.state_mut().assigning.as_mut().unwrap().place = Some(7);
+        harness.state_mut().catalog = Some(catalog);
+        let assign = harness.state_mut().assigning.as_mut().unwrap();
+        assign.file = file;
+        assign.checked = None;
         harness.run();
-        harness.get_by_label("Replace 03B").click();
+        harness.get_by_label_contains("with its cab cannot be sent to the pedal yet");
+        std::fs::remove_file(harness.state().assigning.as_ref().unwrap().file.clone()).unwrap();
+    }
+
+    #[test]
+    fn empty_places_are_marked() {
+        let Some((mut connection, _device)) = super::pedal_tests::connection() else { return };
+        let Some(catalog) = res_catalog() else { return };
+        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        connection.document = std::fs::read(fixtures.join("../nx-proto/tests/fixtures/02-select-preset-01C.doc")).unwrap();
+        connection.presets = vec![nx_proto::PresetEntry { index: 0, name: "Recto DM".into() }, nx_proto::PresetEntry { index: 1, name: "New Preset".into() }];
+        let mut harness = editor(Some(connection));
+        harness.state_mut().catalog = Some(catalog);
+        let assign = harness.state_mut().assigning.as_mut().unwrap();
+        assign.file = fixtures.join("../nx-hlx/tests/fixtures/Revv_Home.hlx");
+        assign.checked = None;
         harness.run();
-        let error = harness.state().assigning.as_ref().and_then(|a| a.error.clone()).expect("dialog stays open with a reason");
-        assert!(error.starts_with("Cannot send this preset"), "{error}");
+        harness.get_by_label("01B New Preset, empty");
     }
 }
