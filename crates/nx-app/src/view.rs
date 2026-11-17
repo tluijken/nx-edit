@@ -115,6 +115,8 @@ pub struct EditorApp {
     closing: bool,
     /// A library preset whose place on the pedal is being chosen.
     assigning: Option<crate::assign::Assign>,
+    /// A knob whose value is being typed: block, parameter and the text so far.
+    typing: Option<(String, String, String)>,
     /// The models search field takes the keyboard when the models list is next drawn.
     focus_search: bool,
     /// What the presets list is narrowed to.
@@ -186,6 +188,7 @@ impl EditorApp {
             setup: Default::default(),
             preset_filter: String::new(),
             focus_search: false,
+            typing: None,
             scroll_to_current: true,
             catalog_problem: None,
         }
@@ -485,6 +488,8 @@ impl EditorApp {
             for (screen, hint) in [(Screen::Editor, "Signal chain"), (Screen::CustomTone, "CustomTone")] {
                 let (rect, response) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::click());
                 let active = self.screen == screen;
+                response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, active, hint));
+                focus_ring(ui, rect, &response);
                 if active {
                     ui.painter().rect_filled(rect, CornerRadius::same(12), theme::RAISED_HI);
                 }
@@ -652,7 +657,9 @@ impl EditorApp {
                 if self.editable() {
                     let power = Rect::from_center_size(power_center(rect), vec2(28.0, 28.0));
                     let response = ui.interact(power, ui.scope_id().with(("power", &tile.block_key)), Sense::click());
-                    if response.on_hover_text(if tile.enabled { "Bypass" } else { "Turn on" }).clicked() {
+                    let action = if tile.enabled { "Bypass" } else { "Turn on" };
+                    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{action} {}", tile.label)));
+                    if response.on_hover_text(action).clicked() {
                         clicked = Some(ChainClick::Toggle(tile.block_key.clone()));
                     }
                 }
@@ -832,13 +839,19 @@ impl EditorApp {
                         let shown = display_value(value, def, options);
                         let response = knob_card(ui, width, label, &shown, knob_fraction(value, def), color, live.is_some());
                         let Some((def, v)) = live else { continue };
+                        if let Some(next) = self.knob_keys(ui, &response, &key, name, def, v, &shown) {
+                            turned = Some((name.clone(), next));
+                            self.history.push(Turn { block: key.clone(), param: name.clone(), before: v, after: next });
+                        }
                         if response.drag_started() {
                             self.drag = Some(Drag { block: key.clone(), param: name.clone(), start: v, up: 0.0 });
                         }
                         if let Some(drag) = self.drag.as_mut().filter(|d| d.block == key && &d.param == name)
                             && response.dragged()
                         {
-                            drag.up -= response.drag_delta().y;
+                            // Shift slows the knob down for fine settings.
+                            let rate = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
+                            drag.up -= response.drag_delta().y * rate;
                             if let Some(next) = dragged(drag.start, def, drag.up).filter(|n| (n - v).abs() > 1e-9) {
                                 turned = Some((name.clone(), next));
                             }
@@ -862,6 +875,84 @@ impl EditorApp {
         }
         let Some((name, value)) = turned else { return };
         self.set_param(&key, &name, value);
+    }
+
+    /// A knob turned without dragging: arrow keys while it has the keyboard (Shift for bigger
+    /// steps), the mouse wheel over it, a double-click back to its default, or a value typed after
+    /// Enter or a right-click. The value it gets, if another.
+    #[allow(clippy::too_many_arguments)]
+    fn knob_keys(&mut self, ui: &Ui, response: &egui::Response, key: &str, name: &str, def: &nx_catalog::ParamDef, v: f64, shown: &str) -> Option<f64> {
+        let step = crate::layout::KNOB_TRAVEL / 100.0;
+        let changed = |next: Option<f64>| next.filter(|n| (n - v).abs() > 1e-9);
+        if response.has_focus() {
+            ui.memory_mut(|m| m.set_focus_lock_filter(response.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
+            let (up, down, big, enter) = ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowRight),
+                    i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::ArrowLeft),
+                    i.modifiers.shift,
+                    i.key_pressed(egui::Key::Enter),
+                )
+            });
+            let by = if big { step * 10.0 } else { step };
+            if enter {
+                self.typing = Some((key.to_owned(), name.to_owned(), shown.to_owned()));
+            }
+            if up != down {
+                return changed(dragged(v, def, if up { by } else { -by }));
+            }
+        }
+        if response.hovered() && self.drag.is_none() {
+            // The wheel turns the knob instead of scrolling the editor.
+            let notches: f32 = ui.input_mut(|i| {
+                let notches = i
+                    .raw
+                    .events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::MouseWheel { delta, .. } if delta.y != 0.0 => Some(delta.y.signum()),
+                        _ => None,
+                    })
+                    .sum();
+                if notches != 0.0 {
+                    i.smooth_scroll_delta = egui::Vec2::ZERO;
+                }
+                notches
+            });
+            if notches != 0.0 {
+                return changed(dragged(v, def, notches * step));
+            }
+        }
+        if response.double_clicked() {
+            return changed(def.default.as_f64().or_else(|| def.default.as_bool().map(|b| f64::from(u8::from(b)))));
+        }
+        if response.secondary_clicked() {
+            self.typing = Some((key.to_owned(), name.to_owned(), shown.to_owned()));
+        }
+        let typing = self.typing.as_mut().filter(|(k, n, _)| k == key && n == name)?;
+        let at = response.rect.center_top() + vec2(-40.0, 110.0);
+        let mut done = None;
+        egui::Area::new(response.id.with("typing")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+            Frame::new().fill(theme::BG).stroke(Stroke::new(2.0, theme::ACCENT)).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(6, 4)).show(ui, |ui| {
+                let edit = ui.add(egui::TextEdit::singleline(&mut typing.2).desired_width(68.0).align(Align2::CENTER_CENTER).font(mono(15.0)));
+                let label = format!("Value of {}", def.name);
+                edit.widget_info(|| {
+                    let mut info = egui::WidgetInfo::text_edit(true, "", &typing.2, "");
+                    info.label = Some(label.clone());
+                    info
+                });
+                if !edit.has_focus() && !edit.lost_focus() {
+                    edit.request_focus();
+                }
+                if edit.lost_focus() {
+                    done = Some(ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                }
+            });
+        });
+        let entered = done?;
+        let text = self.typing.take().map(|(_, _, t)| t).unwrap_or_default();
+        response.request_focus();
+        if entered { changed(crate::layout::parsed_value(&text, def)) } else { None }
     }
 
     /// Picks an empty position of path A; the models list then says what to put there.
@@ -1414,11 +1505,13 @@ impl EditorApp {
                 }
                 let shown = self.showing_file.as_ref() == Some(&entry.path);
                 let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+                response.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, shown, &entry.name));
                 if shown {
                     ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED_HI);
                 } else if response.hovered() {
                     ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED);
                 }
+                focus_ring(ui, rect, &response);
                 let font = if shown { theme::semibold(14.0) } else { theme::regular(14.0) };
                 ui.painter().text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, &entry.name, font, if shown { theme::TEXT } else { theme::TEXT_MID });
                 if response.clicked() {
@@ -1726,6 +1819,7 @@ impl EditorApp {
             let active = i == current;
             let sense = if live { Sense::click() } else { Sense::hover() };
             let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), sense);
+            response.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListBoxOption, live, active, format!("Snapshot {}: {name}", i + 1)));
             if response.clicked() && !active {
                 pick = Some(i);
             }
@@ -2031,9 +2125,11 @@ fn segmented<T: Copy + PartialEq>(ui: &mut Ui, value: &mut T, options: &[(T, &st
             for (option, label) in options {
                 let active = *value == *option;
                 let (rect, response) = ui.allocate_exact_size(vec2(width, 34.0), Sense::click());
+                response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, active, *label));
                 if active {
                     ui.painter().rect_filled(rect, CornerRadius::same(255), theme::RAISED_HI);
                 }
+                focus_ring(ui, rect, &response);
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, theme::semibold(13.0), if active { theme::TEXT } else { theme::TEXT_DIM });
                 if response.clicked() {
                     *value = *option;
@@ -2462,11 +2558,24 @@ fn led_picker(ui: &mut Ui, row: Rect, index: usize, color: u64, live: bool) -> O
 
 /// A parameter's card, dragged up and down when `live`.
 fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, color: Color32, live: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(width, KNOB_CARD.y), if live { Sense::drag() } else { Sense::hover() });
-    let response = if live { response.on_hover_cursor(egui::CursorIcon::ResizeVertical) } else { response };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, KNOB_CARD.y), if live { Sense::click_and_drag() } else { Sense::hover() });
+    let response = if live {
+        response
+            .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+            .on_hover_text("Drag up or down (Shift for fine steps), scroll, or use the arrow keys. Double-click resets it, right-click or Enter types a value.")
+    } else {
+        response
+    };
+    response.widget_info(|| {
+        let mut info = egui::WidgetInfo::slider(live, f64::from(fraction), label);
+        info.current_text_value = Some(value.to_owned());
+        info
+    });
     let painter = ui.painter();
-    let hot = live && (response.hovered() || response.dragged());
+    let hot = live && (response.hovered() || response.dragged() || response.has_focus());
     painter.rect_filled(rect, CornerRadius::same(14), if hot { theme::RAISED_HI } else { theme::RAISED });
+    focus_ring(ui, rect, &response);
+    let painter = ui.painter();
     let center = rect.center_top() + vec2(0.0, 54.0);
     let arc = |to: f32| -> Vec<Pos2> {
         let steps = 48;
@@ -2758,6 +2867,29 @@ mod tests {
         assert_eq!(harness.state().preset.as_ref().unwrap().current_snapshot(), 0, "picking a colour does not switch snapshots");
         assert!(harness.state().unsaved);
         harness.get_by_label("LED colour of snapshot 2: Violet");
+    }
+
+    #[test]
+    fn a_knob_is_turned_with_the_arrow_keys_and_takes_a_typed_value() {
+        let file = library_file("knob-keys");
+        let Some(mut harness) = editor_with_catalog(&file, "block2") else { return };
+        let start = param_of(&harness, "block2", "Drive").as_f64().unwrap();
+        harness.get_by_label("Drive").focus();
+        harness.run();
+        harness.key_press(egui::Key::ArrowUp);
+        harness.run();
+        let up = param_of(&harness, "block2", "Drive").as_f64().unwrap();
+        assert!((up - (start + 0.01)).abs() < 1e-6, "{start} -> {up}");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        harness.get_by_role(egui::accesskit::Role::TextInput).type_text("7.5");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        harness.run();
+        assert_eq!(param_of(&harness, "block2", "Drive").as_f64(), Some(0.75));
+        assert!(harness.state().unsaved);
     }
 
     #[test]

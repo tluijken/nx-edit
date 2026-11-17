@@ -145,6 +145,17 @@ pub fn display_value(value: &serde_json::Value, def: Option<&nx_catalog::ParamDe
     }
 }
 
+/// A value typed as `display_value` shows it, as the parameter holds it: a 0–1 knob from its 0–10
+/// scale, clamped to the range and rounded for an integer. `None` for what is not a number.
+pub fn parsed_value(text: &str, def: &nx_catalog::ParamDef) -> Option<f64> {
+    let typed: f64 = text.trim().replace(',', ".").parse().ok().filter(|v: &f64| v.is_finite())?;
+    let unit_range = def.min == Some(0.0) && def.max == Some(1.0) && def.value_type == FLOAT;
+    let v = if unit_range { typed / 10.0 } else { typed };
+    let v = v.clamp(def.min.unwrap_or(f64::MIN), def.max.unwrap_or(f64::MAX));
+    // Dividing by 10 leaves noise such as 0.42000000000000004 that would be written to the file.
+    Some(if def.value_type == INTEGER { v.round() } else { (v * 1e9).round() / 1e9 })
+}
+
 /// `v` as the `.hlx` holds a parameter of this kind: an integer, a switch or a float. The `.hlx`
 /// writes whole floats without a fraction, so the kind comes from the model, not from the value.
 pub fn typed_value(def: Option<&nx_catalog::ParamDef>, v: f64) -> serde_json::Value {
@@ -208,6 +219,28 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    fn knob(min: f64, max: f64, value_type: u8) -> nx_catalog::ParamDef {
+        nx_catalog::ParamDef {
+            id: "Knob".into(),
+            name: "Knob".into(),
+            value_type,
+            display_type: None,
+            min: Some(min),
+            max: Some(max),
+            default: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn a_typed_value_is_read_on_the_scale_it_is_shown_on() {
+        assert_eq!(parsed_value("6.5", &knob(0.0, 1.0, FLOAT)), Some(0.65));
+        assert_eq!(parsed_value(" 4,2 ", &knob(0.0, 1.0, FLOAT)), Some(0.42));
+        assert_eq!(parsed_value("-3", &knob(-12.0, 12.0, FLOAT)), Some(-3.0));
+        assert_eq!(parsed_value("99", &knob(-12.0, 12.0, FLOAT)), Some(12.0), "clamped to the range");
+        assert_eq!(parsed_value("2.6", &knob(0.0, 8.0, INTEGER)), Some(3.0));
+        assert_eq!(parsed_value("loud", &knob(0.0, 1.0, FLOAT)), None);
+    }
 
     fn preset(name: &str) -> Preset {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-hlx/tests/fixtures").join(name);

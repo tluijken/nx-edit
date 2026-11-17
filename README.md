@@ -20,7 +20,8 @@ Windows 11 VM.
 
 - Reads the current preset from the pedal and draws its signal chain, including path B splits and
   joins.
-- Turns knobs, picks list values such as a cab's mic by name, flips switches and a delay's or
+- Turns knobs by dragging (Shift for fine steps), with the mouse wheel or the arrow keys, resets
+  them with a double-click and takes typed values (Enter or right-click). Picks list values such as a cab's mic by name, flips switches and a delay's or
   reverb's trails, switches blocks on and off and changes snapshots on the pedal. It follows edits
   made on the pedal itself, and undo and redo work for knob turns. A snapshot's footswitch LED colour
   is picked from the dot beside it. Save (Ctrl+S) stores the edits in
