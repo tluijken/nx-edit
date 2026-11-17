@@ -1,5 +1,4 @@
 //! Putting a library preset on a place of the pedal: choosing the place and saying what is replaced.
-//! Sending it waits for a capture of how HX Edit imports a preset (capture-session step 19).
 
 use std::path::PathBuf;
 
@@ -12,6 +11,8 @@ pub struct Assign {
     pub name: String,
     pub place: Option<u64>,
     pub filter: String,
+    /// Why the preset could not be sent, shown in the dialog.
+    pub error: Option<String>,
 }
 
 /// The places whose label ("03B") or current name contains `filter`, ignoring case.
