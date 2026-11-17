@@ -38,10 +38,11 @@ impl ModelSymbols {
     }
 
     /// The number of a catalog model (a shared id such as `HD2_DistKinkyBoost`), in its mono or
-    /// stereo variant where it has both.
+    /// stereo variant where it has both. Some models exist in one variant only, such as the legacy
+    /// reverbs, which are all stereo; a mono `.hlx` block of those gets that one.
     pub fn number_for(&self, id: &str, stereo: bool) -> Option<u32> {
-        let variant = if stereo { "Stereo" } else { "Mono" };
-        self.number(&format!("{id}{variant}")).or_else(|| self.number(id))
+        let (wanted, other) = if stereo { ("Stereo", "Mono") } else { ("Mono", "Stereo") };
+        self.number(&format!("{id}{wanted}")).or_else(|| self.number(id)).or_else(|| self.number(&format!("{id}{other}")))
     }
 
     pub fn len(&self) -> usize {

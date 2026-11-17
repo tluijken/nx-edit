@@ -168,9 +168,10 @@ fn an_engine_not_seen_yet_is_none() {
 #[test]
 fn a_catalog_model_finds_its_mono_or_stereo_number() {
     let syms = nx_catalog::ModelSymbols::parse(
-        br#"[{"symbol": "HD2_AmpRevvGenRed"}, {"symbol": "HD2_DistKinkyBoostMono"}, {"symbol": "HD2_DistKinkyBoostStereo"}]"#,
+        br#"[{"symbol": "HD2_AmpRevvGenRed"}, {"symbol": "HD2_DistKinkyBoostMono"}, {"symbol": "HD2_DistKinkyBoostStereo"}, {"symbol": "HD2_ReverbHallStereo"}]"#,
     )
     .unwrap();
+    assert_eq!(syms.number_for("HD2_ReverbHall", false), Some(3), "only stereo exists");
     assert_eq!(syms.number_for("HD2_AmpRevvGenRed", false), Some(0));
     assert_eq!(syms.number_for("HD2_DistKinkyBoost", false), Some(1));
     assert_eq!(syms.number_for("HD2_DistKinkyBoost", true), Some(2));
