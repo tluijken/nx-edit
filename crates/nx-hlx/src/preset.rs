@@ -119,6 +119,21 @@ impl Preset {
             .collect()
     }
 
+    /// The footswitch LED colour of each snapshot (`@ledcolor`), 0 (Auto) where the file has none.
+    pub fn snapshot_colors(&self) -> Vec<u64> {
+        let Some(tone) = self.raw["data"]["tone"].as_object() else { return Vec::new() };
+        (0..).map_while(|i| tone.get(&format!("snapshot{i}"))).map(|s| s["@ledcolor"].as_u64().unwrap_or(0)).collect()
+    }
+
+    /// Sets a snapshot's LED colour; false if the preset has no such snapshot.
+    pub fn set_snapshot_color(&mut self, index: usize, color: u64) -> bool {
+        let Some(snapshot) = self.raw.pointer_mut(&format!("/data/tone/snapshot{index}")).and_then(Value::as_object_mut) else {
+            return false;
+        };
+        snapshot.insert("@ledcolor".into(), Value::from(color));
+        true
+    }
+
     /// Index of the active snapshot (`@current_snapshot` in `data.tone.global`), 0 when absent.
     pub fn current_snapshot(&self) -> usize {
         self.raw["data"]["tone"]["global"]["@current_snapshot"].as_u64().unwrap_or_default() as usize

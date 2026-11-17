@@ -126,6 +126,12 @@ fn changing_a_model_is_the_message_hx_edit_sends() {
 }
 
 #[test]
+fn a_snapshot_colour_is_the_message_hx_edit_sends() {
+    let violet = Request::SetSnapshotColor { index: 0, color: 9 };
+    assert_eq!(sent(&violet, 1016), "{102: 1016, 100: 98, 101: {92: 0, 66: 9}}");
+}
+
+#[test]
 fn removing_a_block_is_the_message_hx_edit_sends() {
     assert_eq!(sent(&Request::RemoveBlock { block: 1 }, 1014), "{102: 1014, 100: 28, 101: {98: 1}}");
 }

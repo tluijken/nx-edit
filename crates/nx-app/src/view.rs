@@ -1174,6 +1174,23 @@ impl EditorApp {
         }
     }
 
+    /// Gives a snapshot another footswitch LED colour, in the file or on the pedal.
+    fn set_snapshot_color(&mut self, index: usize, color: u64) {
+        if self.showing_file.is_some() {
+            if let Some(preset) = self.preset.as_mut() {
+                preset.set_snapshot_color(index, color);
+            }
+            self.unsaved = true;
+            return;
+        }
+        let Some(connection) = self.live() else { return };
+        connection.live.set_snapshot_color(index as u64, color);
+        self.pedal_unsaved = true;
+        if let Some(preset) = self.preset.as_mut() {
+            preset.set_snapshot_color(index, color);
+        }
+    }
+
     /// Applies what the pedal reported, in its order.
     fn take_updates(&mut self) {
         let Some(connection) = self.connection.as_ref() else { return };
@@ -1265,7 +1282,9 @@ impl EditorApp {
         let live = self.editable();
         let Some(preset) = &self.preset else { return };
         let current = preset.current_snapshot();
+        let colors = preset.snapshot_colors();
         let mut pick = None;
+        let mut recolor = None;
         for (i, name) in preset.snapshot_names().iter().enumerate() {
             let active = i == current;
             let sense = if live { Sense::click() } else { Sense::hover() };
@@ -1283,9 +1302,15 @@ impl EditorApp {
             painter.rect_filled(badge, CornerRadius::same(9), if active { theme::ACCENT } else { theme::BG });
             painter.text(badge.center(), Align2::CENTER_CENTER, (i + 1).to_string(), mono(13.0), if active { theme::BG } else { theme::TEXT_DIM });
             painter.text(pos2(rect.left() + 54.0, rect.center().y), Align2::LEFT_CENTER, name, theme::semibold(14.0), theme::TEXT);
+            let color = colors.get(i).copied().unwrap_or(0);
+            if let Some(chosen) = led_picker(ui, rect, i, color, live) {
+                recolor = Some((i, chosen));
+            }
             ui.add_space(6.0);
         }
-        if let Some(index) = pick {
+        if let Some((index, color)) = recolor {
+            self.set_snapshot_color(index, color);
+        } else if let Some(index) = pick {
             self.select_snapshot(index);
         }
     }
@@ -1745,6 +1770,89 @@ impl ChoiceCard<'_> {
     }
 }
 
+/// The footswitch LED colours in HX Edit's menu order, numbered as the pedal numbers them: Red 2
+/// and Violet 9 were seen (capture 27), the rest follow the menu. Auto and Off have no colour.
+const LED_COLORS: [(&str, Option<Color32>); 12] = [
+    ("Auto", None),
+    ("White", Some(Color32::from_rgb(0xf4, 0xf4, 0xf0))),
+    ("Red", Some(Color32::from_rgb(0xf9, 0x26, 0x72))),
+    ("Dark Orange", Some(Color32::from_rgb(0xe8, 0x6a, 0x10))),
+    ("Light Orange", Some(Color32::from_rgb(0xfd, 0xa8, 0x4a))),
+    ("Yellow", Some(Color32::from_rgb(0xe6, 0xdb, 0x74))),
+    ("Green", Some(Color32::from_rgb(0xa6, 0xe2, 0x2e))),
+    ("Turquoise", Some(Color32::from_rgb(0x4e, 0xd8, 0xc8))),
+    ("Blue", Some(Color32::from_rgb(0x4a, 0x8c, 0xf0))),
+    ("Violet", Some(Color32::from_rgb(0xae, 0x81, 0xff))),
+    ("Pink", Some(Color32::from_rgb(0xf5, 0x9a, 0xc8))),
+    ("Off", None),
+];
+
+fn led_name(color: u64) -> &'static str {
+    LED_COLORS.get(color as usize).map_or("Unknown", |(name, _)| name)
+}
+
+/// A snapshot's LED as a dot: filled in its colour, a ring with an A for Auto, a struck-through
+/// ring for Off.
+fn led_dot(painter: &egui::Painter, center: Pos2, radius: f32, color: u64) {
+    match LED_COLORS.get(color as usize) {
+        Some((_, Some(fill))) => {
+            painter.circle_filled(center, radius, *fill);
+        }
+        Some(("Auto", None)) => {
+            painter.circle_stroke(center, radius - 1.0, Stroke::new(2.0, theme::TEXT_DIM));
+            painter.text(center, Align2::CENTER_CENTER, "A", theme::semibold(radius), theme::TEXT_DIM);
+        }
+        _ => {
+            painter.circle_stroke(center, radius - 1.0, Stroke::new(2.0, theme::SWITCH_OFF));
+            let d = (radius - 3.0) * std::f32::consts::FRAC_1_SQRT_2;
+            painter.line_segment([center + vec2(-d, d), center + vec2(d, -d)], Stroke::new(2.0, theme::SWITCH_OFF));
+        }
+    }
+}
+
+/// The LED dot at the right of snapshot `index`'s row, with a menu of the colours when `live`;
+/// the colour picked, if another.
+fn led_picker(ui: &mut Ui, row: Rect, index: usize, color: u64, live: bool) -> Option<u64> {
+    let spot = Rect::from_center_size(pos2(row.right() - 28.0, row.center().y), vec2(32.0, 32.0));
+    let sense = if live { Sense::click() } else { Sense::hover() };
+    let response = ui.interact(spot, ui.scope_id().with(("snapshot-led", index)), sense);
+    let response = if live { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
+    let label = format!("LED colour of snapshot {}: {}", index + 1, led_name(color));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, live, &label));
+    if live && response.hovered() {
+        ui.painter().circle_filled(spot.center(), 16.0, theme::BG);
+    }
+    led_dot(ui.painter(), spot.center(), 9.0, color);
+    let frame = Frame::new()
+        .fill(theme::PANEL)
+        .corner_radius(CornerRadius::same(12))
+        .stroke(Stroke::new(1.0, theme::RAISED_HI))
+        .inner_margin(Margin::same(6));
+    let mut picked = None;
+    let popup = egui::Popup::menu(&response).align(egui::RectAlign::BOTTOM_END).align_alternatives(&[egui::RectAlign::TOP_END]);
+    popup.width(180.0).gap(4.0).frame(frame).show(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        for (i, (name, _)) in LED_COLORS.iter().enumerate() {
+            let current = i as u64 == color;
+            let (row, clicked) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+            clicked.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, current, *name));
+            if current {
+                ui.painter().rect_filled(row, CornerRadius::same(8), theme::RAISED_HI);
+            } else if clicked.hovered() {
+                ui.painter().rect_filled(row, CornerRadius::same(8), theme::RAISED);
+            }
+            led_dot(ui.painter(), row.left_center() + vec2(18.0, 0.0), 7.0, i as u64);
+            let font = if current { theme::semibold(14.0) } else { theme::regular(14.0) };
+            let text = if current { theme::ACCENT } else { theme::TEXT_MID };
+            ui.painter().text(row.left_center() + vec2(36.0, 0.0), Align2::LEFT_CENTER, *name, font, text);
+            if clicked.clicked() && !current {
+                picked = Some(i as u64);
+            }
+        }
+    });
+    picked
+}
+
 /// A parameter's card, dragged up and down when `live`.
 fn knob_card(ui: &mut Ui, width: f32, label: &str, value: &str, fraction: f32, color: Color32, live: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(width, KNOB_CARD.y), if live { Sense::drag() } else { Sense::hover() });
@@ -1979,6 +2087,22 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_led_colour_is_picked_from_its_dot() {
+        let file = library_file("led-colour");
+        let mut harness = editor_on(&file);
+        harness.state_mut().panel = Panel::Snapshots;
+        harness.run();
+        harness.get_by_label("LED colour of snapshot 2: Auto").click();
+        harness.run();
+        harness.get_by_label("Violet").click();
+        harness.run();
+        assert_eq!(harness.state().preset.as_ref().unwrap().snapshot_colors(), [0, 9, 0]);
+        assert_eq!(harness.state().preset.as_ref().unwrap().current_snapshot(), 0, "picking a colour does not switch snapshots");
+        assert!(harness.state().unsaved);
+        harness.get_by_label("LED colour of snapshot 2: Violet");
+    }
+
+    #[test]
     fn a_mic_is_picked_from_a_drop_down() {
         let file = library_file("mic-list");
         let Some(mut harness) = editor_with_catalog(&file, "block6") else { return };
@@ -2043,6 +2167,19 @@ mod pedal_tests {
         let device = FakeDevice::new();
         let live = Live::start(Session::connect(device.transport()).unwrap());
         Some((Connection { live, addresses: HashMap::new(), presets: Vec::new(), current: Some(0), generation: 0, syms, document: Vec::new() }, device))
+    }
+
+    #[test]
+    fn a_snapshot_colour_on_the_pedal_is_sent_with_op_98() {
+        let Some((connection, device)) = connection() else { return };
+        let mut app = EditorApp::new(None, None, String::new(), Some(connection));
+        let document = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/02-select-preset-01C.doc")).unwrap();
+        app.apply_loaded(Loaded { generation: 0, preset: crate::device::DevicePreset { name: "Revv DM".into(), index: Some(2), document, modified: false } });
+        app.set_snapshot_color(2, 2);
+        assert_eq!(app.preset.as_ref().unwrap().snapshot_colors(), [0, 0, 2]);
+        assert!(app.pedal_unsaved);
+        drop(app);
+        assert!(device.requests().into_iter().any(|(_, _, r)| r == nx_proto::Request::SetSnapshotColor { index: 2, color: 2 }));
     }
 
     #[test]

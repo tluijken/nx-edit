@@ -46,6 +46,7 @@ enum Command {
     Edit(Edit),
     Select { setlist: u64, index: u64 },
     Snapshot(u64),
+    SnapshotColor { index: u64, color: u64 },
     Enabled { generation: u64, slot: u64, enabled: bool },
     /// A block inserted, given another model or removed, on the preset of `generation`.
     Chain { generation: u64, request: Request },
@@ -118,6 +119,11 @@ impl Live {
 
     pub fn select_snapshot(&self, index: u64) {
         self.send(Command::Snapshot(index));
+    }
+
+    /// Sets a snapshot's LED colour (op 98).
+    pub fn set_snapshot_color(&self, index: u64, color: u64) {
+        self.send(Command::SnapshotColor { index, color });
     }
 
     /// Turns a block on or off (op 41) on the preset of `generation`; `slot` as op 30 addresses it.
@@ -326,6 +332,7 @@ impl Worker {
                 outcome
             }
             Command::Snapshot(index) => self.session.request(Request::SelectSnapshot { index }).map(drop),
+            Command::SnapshotColor { index, color } => self.session.request(Request::SetSnapshotColor { index, color }).map(drop),
             Command::Save { setlist, index, name } => self.session.request(Request::SavePreset { setlist, index, name }).map(|_| {
                 _ = self.out.update.send(Update::Saved(index));
             }),

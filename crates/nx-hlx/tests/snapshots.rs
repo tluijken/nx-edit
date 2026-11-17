@@ -77,3 +77,13 @@ fn a_value_no_snapshot_controls_is_the_same_in_every_snapshot() {
     assert_eq!(param(&preset, "block2", "Drive"), json!(0.7));
     assert_eq!(raw(&preset)["data"]["tone"]["snapshot1"], before);
 }
+
+#[test]
+fn a_snapshot_colour_is_set_in_that_snapshot_only() {
+    let mut preset = revv_dm();
+    assert_eq!(preset.snapshot_colors(), [0, 0, 0]);
+    assert!(preset.set_snapshot_color(1, 9));
+    assert_eq!(preset.snapshot_colors(), [0, 9, 0]);
+    assert_eq!(raw(&preset)["data"]["tone"]["snapshot1"]["@ledcolor"], json!(9));
+    assert!(!preset.set_snapshot_color(3, 2));
+}
