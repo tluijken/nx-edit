@@ -10,7 +10,10 @@ use nx_hlx::Preset;
 
 use crate::device::BlockAddress;
 use crate::history::{History, Turn};
-use crate::layout::{Branch, Control, Lane, Tile, branch, choice_value, chosen, control_for, display_value, dragged, lanes, slot_columns, typed_value, wire_value};
+use crate::layout::{
+    Branch, Control, Lane, PATH_POSITIONS, Tile, branch, choice_value, chosen, control_for, display_value, dragged, empty_positions, lanes, slot_columns,
+    slot_of, typed_value, wire_value,
+};
 use crate::live::{Live, Loaded, ParamChange, Update};
 use crate::theme;
 
@@ -54,7 +57,7 @@ enum Screen {
     CustomTone,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Panel {
     Presets,
     Library,
@@ -88,6 +91,11 @@ pub struct EditorApp {
     /// Edits on the pedal not yet saved to the preset's place, as the pedal reported them or as made
     /// here since.
     pedal_unsaved: bool,
+    /// An empty position of path A picked in the chain, for a model to be put there.
+    selected_empty: Option<u8>,
+    /// The block to select once the pedal reports the preset again, by path and position: one just
+    /// put into an empty slot.
+    select_after_load: Option<(u8, u8)>,
     /// Where to go once the unsaved edits are saved or discarded, while that is asked.
     leaving: Option<Leave>,
     /// The window may close: the unsaved edits were saved or discarded.
@@ -131,6 +139,8 @@ impl EditorApp {
             customtone: Default::default(),
             unsaved: false,
             pedal_unsaved: false,
+            selected_empty: None,
+            select_after_load: None,
             leaving: None,
             closing: false,
         }
@@ -211,6 +221,8 @@ impl EditorApp {
         let Some(preset) = &self.preset else { return };
         let branch = branch(preset);
         let rejoins = lanes.get(1).is_some_and(|l| l.output == lanes[0].output);
+        // The pedal's preset shows every position of path A, so a model can be put in any free one.
+        let empties = if self.live().is_some() { empty_positions(preset) } else { Vec::new() };
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Signal chain").font(theme::semibold(16.0)));
@@ -219,24 +231,30 @@ impl EditorApp {
                 }
             });
             ui.add_space(6.0);
-            let columns = usize::from(slot_columns(lanes, branch)) + 2;
+            let used = if empties.is_empty() { slot_columns(lanes, branch) } else { slot_columns(lanes, branch).max(PATH_POSITIONS) };
+            let columns = usize::from(used) + 2;
             let column = (ui.available_width() / columns as f32).max(MIN_COLUMN);
             let size = vec2(column * columns as f32, ROW_H * lanes.len() as f32);
             let mut clicked = None;
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 let (area, _) = ui.allocate_exact_size(size, Sense::hover());
                 let grid = Grid { origin: area.min, column, columns };
-                clicked = self.paint_chain(ui, &grid, lanes, branch, rejoins);
+                clicked = self.paint_chain(ui, &grid, lanes, branch, rejoins, &empties);
             });
             match clicked {
-                Some(ChainClick::Select(key)) => self.selected_block = Some(key),
+                Some(ChainClick::Select(key)) => {
+                    self.selected_block = Some(key);
+                    self.selected_empty = None;
+                }
                 Some(ChainClick::Toggle(key)) => self.toggle_block(&key),
+                Some(ChainClick::Empty(position)) => self.select_empty(position),
+                Some(ChainClick::Remove(key)) => self.remove_block(&key),
                 None => {}
             }
         });
     }
 
-    fn paint_chain(&self, ui: &Ui, grid: &Grid, lanes: &[Lane], branch: Option<Branch>, rejoins: bool) -> Option<ChainClick> {
+    fn paint_chain(&self, ui: &Ui, grid: &Grid, lanes: &[Lane], branch: Option<Branch>, rejoins: bool, empties: &[u8]) -> Option<ChainClick> {
         let painter = ui.painter();
         let wire = Stroke::new(4.0, theme::WIRE);
         let (top, bottom) = (grid.row(0), grid.row(1));
@@ -265,12 +283,39 @@ impl EditorApp {
             }
         }
         let mut clicked = None;
+        let inset = ((grid.column - 96.0) / 2.0).clamp(4.0, 16.0);
+        for &position in empties {
+            let rect = grid.cell(usize::from(position) + 1, 0).shrink2(vec2(inset, (ROW_H - BLOCK_H) / 2.0));
+            let response = ui.interact(rect, ui.scope_id().with(("empty", position)), Sense::click());
+            let response = response.on_hover_text("Put a block here");
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Empty slot {}", position + 1)));
+            if response.clicked() {
+                clicked = Some(ChainClick::Empty(position));
+            }
+            let selected = self.selected_empty == Some(position);
+            let fill = if response.hovered() { theme::RAISED } else { theme::PANEL };
+            painter.rect_filled(rect, CornerRadius::same(14), fill);
+            let stroke = if selected { Stroke::new(2.0, theme::ACCENT) } else { Stroke::new(1.0, theme::RAISED_HI) };
+            painter.rect_stroke(rect, CornerRadius::same(14), stroke, StrokeKind::Inside);
+            let plus = if selected { theme::ACCENT } else { theme::TEXT_DIM };
+            let c = rect.center();
+            painter.line_segment([c - vec2(9.0, 0.0), c + vec2(9.0, 0.0)], Stroke::new(2.0, plus));
+            painter.line_segment([c - vec2(0.0, 9.0), c + vec2(0.0, 9.0)], Stroke::new(2.0, plus));
+        }
         for (row, lane) in lanes.iter().enumerate() {
             for tile in &lane.tiles {
-                let inset = ((grid.column - 96.0) / 2.0).clamp(4.0, 16.0);
                 let rect = grid.cell(usize::from(tile.position) + 1, row).shrink2(vec2(inset, (ROW_H - BLOCK_H) / 2.0));
-                if ui.interact(rect, ui.scope_id().with(("block", &tile.block_key)), Sense::click()).clicked() {
+                let response = ui.interact(rect, ui.scope_id().with(("block", &tile.block_key)), Sense::click());
+                if response.clicked() {
                     clicked = Some(ChainClick::Select(tile.block_key.clone()));
+                }
+                if self.live().is_some() {
+                    response.context_menu(|ui| {
+                        if ui.button(format!("Remove {}", tile.label)).clicked() {
+                            clicked = Some(ChainClick::Remove(tile.block_key.clone()));
+                            ui.close();
+                        }
+                    });
                 }
                 if self.editable() {
                     let power = Rect::from_center_size(power_center(rect), vec2(28.0, 28.0));
@@ -325,6 +370,17 @@ impl EditorApp {
     }
 
     fn editor_card(&mut self, ui: &mut Ui, lanes: &[Lane]) {
+        if self.selected_block.is_none()
+            && let Some(position) = self.selected_empty
+        {
+            card(ui, |ui| {
+                ui.label(RichText::new("Empty slot").font(theme::semibold(22.0)));
+                ui.label(RichText::new(format!("Path A · slot {}", slot_of(0, position))).font(theme::regular(13.0)).color(theme::TEXT_DIM));
+                ui.add_space(8.0);
+                ui.label(RichText::new("Pick a model in Models to put it here.").font(theme::regular(14.0)).color(theme::TEXT_MID));
+            });
+            return;
+        }
         let (Some(preset), Some(key)) = (&self.preset, self.selected_block.clone()) else { return };
         let Some(block) = preset.blocks().into_iter().find(|b| b.key == key) else { return };
         let tile = lanes.iter().flat_map(|l| &l.tiles).find(|t| t.block_key == key).cloned();
@@ -433,6 +489,54 @@ impl EditorApp {
         }
         let Some((name, value)) = turned else { return };
         self.set_param(&key, &name, value);
+    }
+
+    /// Picks an empty position of path A; the models list then says what to put there.
+    fn select_empty(&mut self, position: u8) {
+        self.selected_empty = Some(position);
+        self.selected_block = None;
+        self.panel = Panel::Models;
+    }
+
+    /// A model picked in the models list: put into the empty slot picked in the chain, or given to
+    /// the selected block, on the pedal's preset. `stereo` picks the stereo variant where there is one.
+    fn choose_model(&mut self, id: &str, stereo: bool) {
+        let Some(connection) = self.live() else { return };
+        let name = self.catalog.as_ref().and_then(|c| c.model(id)).and_then(|m| m.name.clone()).unwrap_or_else(|| id.to_owned());
+        let Some(model) = connection.syms.number_for(id, stereo) else {
+            self.status = format!("{name} is not in HX Edit's model numbering");
+            return;
+        };
+        let generation = connection.generation;
+        if let Some(position) = self.selected_empty {
+            let category = self.catalog.as_ref().and_then(|c| c.model(id)).and_then(|m| m.category);
+            let symbol = connection.syms.get(model).map_or(id, |s| s.symbol.as_str());
+            let Some(engine) = nx_catalog::engine(category, symbol) else {
+                self.status = format!("What the pedal needs to add {name} is not known yet");
+                return;
+            };
+            connection.live.insert(generation, slot_of(0, position), model, engine);
+            self.select_after_load = Some((0, position));
+            self.status = format!("Adding {name}…");
+        } else if let Some(address) = self.selected_block.as_ref().and_then(|key| connection.addresses.get(key)) {
+            connection.live.change_model(generation, address.slot, model);
+            self.status = format!("Changing to {name}…");
+        } else {
+            return;
+        }
+        self.pedal_unsaved = true;
+    }
+
+    /// Takes a block out of the pedal's preset.
+    fn remove_block(&mut self, key: &str) {
+        let Some(connection) = self.live() else { return };
+        let Some(slot) = connection.addresses.get(key).map(|a| a.slot) else { return };
+        connection.live.remove(connection.generation, slot);
+        if self.selected_block.as_deref() == Some(key) {
+            self.selected_block = None;
+        }
+        self.pedal_unsaved = true;
+        self.status = "Removing the block…".to_owned();
     }
 
     /// The model's definition of a parameter of a block in the preset shown.
@@ -968,8 +1072,16 @@ impl EditorApp {
         }
         self.history.clear();
         let keep = same_preset && self.selected_block.as_ref().is_some_and(|k| hlx.blocks().iter().any(|b| &b.key == k));
-        if !keep {
+        let placed = self.select_after_load.take().and_then(|(path, position)| hlx.blocks().into_iter().find(|b| b.path == path && b.position == position));
+        let still_empty = same_preset && self.selected_empty.is_some_and(|p| empty_positions(&hlx).contains(&p));
+        if let Some(block) = placed {
+            self.selected_block = Some(block.key);
+            self.selected_empty = None;
+        } else if still_empty {
+            self.selected_block = None;
+        } else if !keep {
             self.selected_block = hlx.blocks().first().map(|b| b.key.clone());
+            self.selected_empty = None;
             self.drag = None;
         }
         self.preset = Some(hlx);
@@ -1018,21 +1130,18 @@ impl EditorApp {
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            // Each chip is one widget of its own size, so the row wraps inside the panel; a framed
+            // group of a dot and a label did not wrap and stretched the panel past the window.
             for (i, cat) in catalog.categories().iter().enumerate().skip(1) {
                 let active = i == self.selected_category;
-                let response = Frame::new()
-                    .fill(if active { theme::RAISED_HI } else { theme::RAISED })
-                    .corner_radius(CornerRadius::same(255))
-                    .inner_margin(Margin::symmetric(12, 7))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            dot(ui, theme::from_rgb_u32(cat.color), 7.0);
-                            ui.label(RichText::new(&cat.name).font(theme::semibold(12.0)).color(if active { theme::TEXT } else { theme::TEXT_DIM }));
-                        });
-                    })
-                    .response
-                    .interact(Sense::click());
+                let text = if active { theme::TEXT } else { theme::TEXT_DIM };
+                let galley = ui.painter().layout_no_wrap(cat.name.clone(), theme::semibold(12.0), text);
+                let size = vec2(galley.size().x + 12.0 + 7.0 + 6.0 + 12.0, galley.size().y + 14.0);
+                let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+                response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, &cat.name));
+                ui.painter().rect_filled(rect, CornerRadius::same(255), if active { theme::RAISED_HI } else { theme::RAISED });
+                ui.painter().circle_filled(rect.left_center() + vec2(12.0 + 3.5, 0.0), 3.5, theme::from_rgb_u32(cat.color));
+                ui.painter().galley(rect.left_center() + vec2(12.0 + 7.0 + 6.0, -galley.size().y / 2.0), galley, text);
                 if response.clicked() {
                     self.selected_category = i;
                 }
@@ -1043,12 +1152,23 @@ impl EditorApp {
             self.preset.as_ref().and_then(|p| p.blocks().into_iter().find(|b| &b.key == key)).map(|b| b.model)
         });
         let needle = self.search.trim().to_lowercase();
+        // A model can be picked for an empty slot or the selected block of the pedal's preset.
+        let target = self.selected_empty.is_some() || self.selected_block.as_ref().is_some_and(|k| self.live().is_some_and(|c| c.addresses.contains_key(k)));
+        let pickable = target && self.live().is_some();
+        if pickable {
+            let hint = if self.selected_empty.is_some() { "Pick a model to put in the empty slot" } else { "Pick a model to replace the selected block's" };
+            ui.label(RichText::new(hint).font(theme::regular(12.0)).color(theme::TEXT_DIM));
+            ui.add_space(4.0);
+        }
+        let mut picked = None;
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             let name_of = |id: &String| catalog.model(id).and_then(|m| m.name.clone()).unwrap_or_else(|| id.clone());
             if !needle.is_empty() {
                 for cat in catalog.categories().iter().skip(1) {
                     for id in cat.model_ids.iter().filter(|id| name_of(id).to_lowercase().contains(&needle)) {
-                        model_row(ui, &name_of(id), current.as_ref() == Some(id));
+                        if model_row(ui, &name_of(id), current.as_ref() == Some(id), pickable) {
+                            picked = Some((id.clone(), false));
+                        }
                     }
                 }
                 return;
@@ -1062,10 +1182,15 @@ impl EditorApp {
                     ui.label(RichText::new(&group.name).font(theme::semibold(12.0)).color(theme::TEXT_DIM));
                 }
                 for id in &group.model_ids {
-                    model_row(ui, &name_of(id), current.as_ref() == Some(id));
+                    if model_row(ui, &name_of(id), current.as_ref() == Some(id), pickable) {
+                        picked = Some((id.clone(), group.name == "Stereo"));
+                    }
                 }
             }
         });
+        if let Some((id, stereo)) = picked {
+            self.choose_model(&id, stereo);
+        }
     }
 }
 
@@ -1087,6 +1212,9 @@ fn open_in_file_manager(dir: &std::path::Path) {
 enum ChainClick {
     Select(String),
     Toggle(String),
+    /// An empty position of path A.
+    Empty(u8),
+    Remove(String),
 }
 
 /// The centre of a block tile's power icon.
@@ -1173,10 +1301,14 @@ fn segmented<T: Copy + PartialEq>(ui: &mut Ui, value: &mut T, options: &[(T, &st
     });
 }
 
-fn model_row(ui: &mut Ui, name: &str, current: bool) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
+/// A model in the models list; clicked when `pickable` and the model was picked.
+fn model_row(ui: &mut Ui, name: &str, current: bool, pickable: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), if pickable { Sense::click() } else { Sense::hover() });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, pickable, name));
     if current {
         ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED_HI);
+    } else if pickable && response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED);
     }
     let font = if current { theme::semibold(14.0) } else { theme::regular(14.0) };
     ui.painter().text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, name, font, if current { theme::TEXT } else { theme::TEXT_MID });
@@ -1185,6 +1317,7 @@ fn model_row(ui: &mut Ui, name: &str, current: bool) {
         let check = vec![c + vec2(-6.0, 0.0), c + vec2(-1.5, 4.5), c + vec2(6.0, -5.0)];
         ui.painter().add(Shape::line(check, Stroke::new(2.4, theme::ACCENT)));
     }
+    pickable && !current && response.clicked()
 }
 
 /// An input or output of the chain, drawn as a pill centred in its cell; a narrow cell drops the
@@ -1706,6 +1839,7 @@ mod tests {
 mod pedal_tests {
     use std::path::PathBuf;
 
+    use egui_kittest::kittest::Queryable;
     use nx_proto::Request;
     use nx_session::Session;
     use nx_session::fake::FakeDevice;
@@ -1859,6 +1993,72 @@ mod pedal_tests {
         assert_eq!(sent, [Request::SetExtra { block: 5, path: 0, index: 0, value: rmpv::Value::Boolean(false) }]);
         app.apply_change(0, ParamChange { slot: 5, sub: 0, param: crate::device::Param::Extra(0), value: rmpv::Value::Boolean(true) });
         assert_eq!(delay_trails(&app), Some(true), "the pedal's own switch is followed");
+    }
+
+    fn chain_edit(r: &Request) -> bool {
+        matches!(r, Request::InsertBlock { .. } | Request::ChangeModel { .. } | Request::RemoveBlock { .. })
+    }
+
+    /// NX Test (amp in slot 2, cab in slot 3) with HX Edit's real model data.
+    fn chain_app() -> Option<(EditorApp, FakeDevice)> {
+        let catalog = real_catalog()?;
+        let (mut app, device) = on_nx_test(false)?;
+        app.catalog = Some(catalog);
+        Some((app, device))
+    }
+
+    #[test]
+    fn a_model_picked_for_an_empty_slot_is_put_there() {
+        let Some((mut app, device)) = chain_app() else { return };
+        app.select_empty(0);
+        assert_eq!(app.panel, Panel::Models, "picking a model is what an empty slot is for");
+        app.choose_model("HD2_DelaySimpleDelay", false);
+        assert_eq!(sent_once(&device, chain_edit, 1), [Request::InsertBlock { block: 1, model: 80, engine: 8, cab: None }]);
+    }
+
+    #[test]
+    fn a_click_on_an_empty_slot_and_then_a_model_adds_the_block() {
+        let Some((app, device)) = chain_app() else { return };
+        let mut app = Some(app);
+        let mut harness = egui_kittest::Harness::builder().with_size(vec2(1400.0, 1400.0)).build_eframe(move |cc| {
+            theme::install(&cc.egui_ctx);
+            app.take().unwrap()
+        });
+        harness.run();
+        harness.get_by_label("Empty slot 1").click();
+        harness.run();
+        assert_eq!((harness.state().selected_empty, harness.state().panel), (Some(0), Panel::Models));
+        harness.state_mut().search = "Simple Delay".into();
+        harness.run();
+        harness.get_all_by_label("Simple Delay").next().unwrap().click();
+        harness.run();
+        assert!(harness.state().status.starts_with("Adding"), "{}", harness.state().status);
+        assert_eq!(sent_once(&device, chain_edit, 1), [Request::InsertBlock { block: 1, model: 80, engine: 8, cab: None }]);
+    }
+
+    #[test]
+    fn a_model_picked_for_a_block_replaces_its_model() {
+        let Some((mut app, device)) = chain_app() else { return };
+        app.selected_block = Some("block0".into());
+        app.choose_model("HD2_AmpRevvGenRed", false);
+        assert_eq!(sent_once(&device, chain_edit, 1), [Request::ChangeModel { block: 2, model: 545, cab: None }]);
+    }
+
+    #[test]
+    fn removing_a_block_empties_its_slot() {
+        let Some((mut app, device)) = chain_app() else { return };
+        app.remove_block("block1");
+        assert_eq!(sent_once(&device, chain_edit, 1), [Request::RemoveBlock { block: 3 }]);
+    }
+
+    #[test]
+    fn a_model_whose_engine_is_unknown_is_not_put_on_the_pedal() {
+        let Some((mut app, device)) = chain_app() else { return };
+        app.select_empty(0);
+        app.choose_model("HD2_ReturnMono1", false);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(device.requests().iter().all(|(_, _, r)| !chain_edit(r)));
+        assert!(app.status.contains("not known yet"), "{}", app.status);
     }
 
     #[test]

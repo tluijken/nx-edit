@@ -55,6 +55,21 @@ pub fn lanes(preset: &Preset, catalog: Option<&Catalog>) -> Vec<Lane> {
     lanes
 }
 
+/// Block positions on each path of the HX Stomp.
+pub const PATH_POSITIONS: u8 = 8;
+
+/// The positions of path A that hold no block.
+pub fn empty_positions(preset: &Preset) -> Vec<u8> {
+    let used: Vec<u8> = preset.blocks().iter().filter(|b| b.path == 0).map(|b| b.position).collect();
+    (0..PATH_POSITIONS).filter(|p| !used.contains(p)).collect()
+}
+
+/// The document slot of a path position, as ops 28, 39 and 40 address it: slot 0 is the input,
+/// 1-8 path A, 9 the output and 10 the split, 11-18 path B [seen: Revv DM, slots 1-8 and 17].
+pub fn slot_of(path: u8, position: u8) -> u64 {
+    u64::from(position) + if path == 0 { 1 } else { 11 }
+}
+
 /// Where path 1 leaves path 0 and comes back, in slot positions: the branch starts before slot
 /// `split` and rejoins before slot `join`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,6 +453,18 @@ mod tests {
         assert_eq!(chosen(&serde_json::json!(true), &kind(2, "off_on", 0.0, 1.0)), Some(1));
         assert_eq!(choice_value(5, &sync), 6.0);
         assert_eq!(choice_value(1, &kind(2, "off_on", 0.0, 1.0)), 1.0);
+    }
+
+    #[test]
+    fn the_free_places_of_path_a_are_the_positions_without_a_block() {
+        assert_eq!(empty_positions(&preset("Revv_DM.hlx")), [6, 7]);
+    }
+
+    #[test]
+    fn path_a_positions_are_slots_one_to_eight() {
+        assert_eq!(slot_of(0, 0), 1);
+        assert_eq!(slot_of(0, 7), 8);
+        assert_eq!(slot_of(1, 6), 17, "Revv DM's cab: path B position 6 is slot 17");
     }
 }
 
