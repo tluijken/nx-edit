@@ -10,7 +10,7 @@ use nx_hlx::Preset;
 
 use crate::connect::{Connect, Connector, Linked};
 use crate::device::BlockAddress;
-use crate::history::{History, Turn};
+use crate::history::{Edit, History, Turn};
 use crate::layout::{
     Branch, Control, Lane, PATH_POSITIONS, Tile, branch, choice_value, chosen, control_for, display_value, dragged, empty_positions, lanes, slot_columns,
     slot_of, typed_value, wire_value,
@@ -88,8 +88,11 @@ pub struct EditorApp {
     showing_file: Option<std::path::PathBuf>,
     /// A library preset being renamed, and the name typed so far.
     renaming: Option<(std::path::PathBuf, String)>,
-    /// Knob turns on the pedal's preset, for undo and redo.
+    /// Knob turns and chain edits on the preset shown, for undo and redo.
     history: History,
+    /// A model clicked in the models list for the selected block, by block key, model and whether
+    /// stereo; it replaces the block's model only once confirmed.
+    model_choice: Option<(String, String, bool)>,
     /// The pedal's preset, kept while a library file is shown.
     pedal_preset: Option<Preset>,
     screen: Screen,
@@ -161,6 +164,7 @@ impl EditorApp {
             showing_file: None,
             renaming: None,
             history: History::default(),
+            model_choice: None,
             pedal_preset: None,
             screen: Screen::Editor,
             customtone: Default::default(),
@@ -758,6 +762,7 @@ impl EditorApp {
             return;
         };
         let generation = connection.generation;
+        let before = connection.document.clone();
         if let Some(position) = self.selected_empty {
             let category = self.catalog.as_ref().and_then(|c| c.model(id)).and_then(|m| m.category);
             let symbol = connection.syms.get(model).map_or(id, |s| s.symbol.as_str());
@@ -774,6 +779,8 @@ impl EditorApp {
         } else {
             return;
         }
+        self.model_choice = None;
+        self.history.push_document(before);
         self.pedal_unsaved = true;
     }
 
@@ -782,6 +789,7 @@ impl EditorApp {
         let Some(connection) = self.live() else { return };
         let Some(slot) = connection.addresses.get(key).map(|a| a.slot) else { return };
         connection.live.remove(connection.generation, slot);
+        self.history.push_document(connection.document.clone());
         if self.selected_block.as_deref() == Some(key) {
             self.selected_block = None;
         }
@@ -805,6 +813,7 @@ impl EditorApp {
         match moved {
             Ok(document) => {
                 connection.live.write_document(connection.generation, document);
+                self.history.push_document(connection.document.clone());
                 self.select_after_load = Some((0, position));
                 self.pedal_unsaved = true;
                 self.notices.info("Moving the block…");
@@ -841,9 +850,9 @@ impl EditorApp {
         }
     }
 
-    /// Ctrl+Z takes the last knob turn back, Ctrl+Shift+Z or Ctrl+Y makes it again, Ctrl+S saves
-    /// what is shown, to its library file or on the pedal; only while no text field has the
-    /// keyboard.
+    /// Ctrl+Z takes the last edit back, a knob turn or a chain edit on the pedal, Ctrl+Shift+Z or
+    /// Ctrl+Y makes it again, Ctrl+S saves what is shown, to its library file or on the pedal; only
+    /// while no text field has the keyboard.
     fn edit_keys(&mut self, ctx: &egui::Context) {
         if !self.editable() || self.leaving.is_some() || ctx.memory(|m| m.focused().is_some()) {
             return;
@@ -855,17 +864,31 @@ impl EditorApp {
             let z = i.modifiers.command && i.key_pressed(egui::Key::Z);
             (z && !i.modifiers.shift, (z && i.modifiers.shift) || (i.modifiers.command && i.key_pressed(egui::Key::Y)))
         });
+        let now = self.live().map(|c| c.document.clone()).unwrap_or_default();
         let step = if undo {
-            self.history.undo().map(|t| (t.block, t.param, t.before))
+            self.history.undo(&now)
         } else if redo {
-            self.history.redo().map(|t| (t.block, t.param, t.after))
+            self.history.redo(&now)
         } else {
             None
         };
-        if let Some((block, param, value)) = step {
-            self.selected_block = Some(block.clone());
-            self.set_param(&block, &param, value);
+        match step {
+            Some(Edit::Turn(turn)) => {
+                let value = if undo { turn.before } else { turn.after };
+                self.selected_block = Some(turn.block.clone());
+                self.set_param(&turn.block, &turn.param, value);
+            }
+            Some(Edit::Document(document)) => self.write_back(document),
+            None => {}
         }
+    }
+
+    /// Puts the pedal's chain back as `document` has it, for undo and redo of a chain edit.
+    fn write_back(&mut self, document: Vec<u8>) {
+        let Some(connection) = self.live() else { return };
+        connection.live.write_document(connection.generation, document);
+        self.pedal_unsaved = true;
+        self.notices.info("Writing the chain back to the pedal…");
     }
 
     fn side_card(&mut self, ui: &mut Ui) {
@@ -1476,7 +1499,11 @@ impl EditorApp {
             self.pedal_preset = Some(hlx);
             return;
         }
-        self.history.clear();
+        // A chain edit, a snapshot or an undo has the pedal report its preset again; only another
+        // preset ends what can be undone.
+        if !same_preset {
+            self.history.clear();
+        }
         let keep = same_preset && self.selected_block.as_ref().is_some_and(|k| hlx.blocks().iter().any(|b| &b.key == k));
         let placed = self.select_after_load.take().and_then(|(path, position)| hlx.blocks().into_iter().find(|b| b.path == path && b.position == position));
         let still_empty = same_preset && self.selected_empty.is_some_and(|p| empty_positions(&hlx).contains(&p));
@@ -1568,20 +1595,49 @@ impl EditorApp {
         // A model can be picked for an empty slot or the selected block of the pedal's preset.
         let target = self.selected_empty.is_some() || self.selected_block.as_ref().is_some_and(|k| self.live().is_some_and(|c| c.addresses.contains_key(k)));
         let pickable = target && self.live().is_some();
+        let name_of = |id: &str| catalog.model(id).and_then(|m| m.name.clone()).unwrap_or_else(|| id.to_owned());
+        let chosen = self.model_choice.as_ref().filter(|(key, _, _)| self.selected_empty.is_none() && Some(key) == self.selected_block.as_ref()).cloned();
+        let mut apply = None;
+        let mut cancel = false;
         if pickable {
-            let hint = if self.selected_empty.is_some() { "Pick a model to put in the empty slot" } else { "Pick a model to replace the selected block's" };
+            let hint = match (self.selected_empty, &current) {
+                (Some(position), _) => format!("Click a model to put it in slot {}.", position + 1),
+                (None, Some(model)) => format!("Click a model and then Replace to change {}; a double-click replaces at once.", name_of(model)),
+                (None, None) => String::new(),
+            };
             ui.label(RichText::new(hint).font(theme::regular(12.0)).color(theme::TEXT_DIM));
+            if let (Some((_, id, stereo)), Some(model)) = (&chosen, &current) {
+                Frame::new().fill(theme::RAISED).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(10)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(format!("Replace {} with {}?", name_of(model), name_of(id))).font(theme::semibold(14.0)));
+                    ui.horizontal(|ui| {
+                        let replace = egui::Button::new(RichText::new("Replace").font(theme::semibold(13.0)).color(theme::BG)).fill(theme::ACCENT).corner_radius(CornerRadius::same(255));
+                        if ui.add(replace).clicked() {
+                            apply = Some((id.clone(), *stereo));
+                        }
+                        if ui.add(egui::Button::new(RichText::new("Cancel").font(theme::semibold(13.0))).corner_radius(CornerRadius::same(255))).clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            }
             ui.add_space(4.0);
+        } else if self.showing_file.is_some() {
+            ui.label(RichText::new("Adding blocks and changing models works on the pedal's preset; in a library file, turn knobs and switch blocks.").font(theme::regular(12.0)).color(theme::TEXT_DIM));
         }
-        let mut picked = None;
+        let mut clicked = None;
+        let picked_id = chosen.as_ref().map(|(_, id, _)| id.clone());
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            let name_of = |id: &String| catalog.model(id).and_then(|m| m.name.clone()).unwrap_or_else(|| id.clone());
+            let mut row = |ui: &mut Ui, id: &String, stereo: bool| {
+                let click = model_row(ui, &name_of(id), current.as_ref() == Some(id), picked_id.as_ref() == Some(id), pickable);
+                if click != RowClick::None {
+                    clicked = Some((id.clone(), stereo, click));
+                }
+            };
             if !needle.is_empty() {
                 for cat in catalog.categories().iter().skip(1) {
                     for id in cat.model_ids.iter().filter(|id| name_of(id).to_lowercase().contains(&needle)) {
-                        if model_row(ui, &name_of(id), current.as_ref() == Some(id), pickable) {
-                            picked = Some((id.clone(), false));
-                        }
+                        row(ui, id, false);
                     }
                 }
                 return;
@@ -1595,13 +1651,25 @@ impl EditorApp {
                     ui.label(RichText::new(&group.name).font(theme::semibold(12.0)).color(theme::TEXT_DIM));
                 }
                 for id in &group.model_ids {
-                    if model_row(ui, &name_of(id), current.as_ref() == Some(id), pickable) {
-                        picked = Some((id.clone(), group.name == "Stereo"));
-                    }
+                    row(ui, id, group.name == "Stereo");
                 }
             }
         });
-        if let Some((id, stereo)) = picked {
+        match clicked {
+            // An empty slot was picked to put a model in, so one click is enough.
+            Some((id, stereo, _)) if self.selected_empty.is_some() => apply = Some((id, stereo)),
+            Some((id, stereo, RowClick::Apply)) => apply = Some((id, stereo)),
+            Some((id, stereo, RowClick::Pick)) => {
+                if let Some(key) = self.selected_block.clone() {
+                    self.model_choice = Some((key, id, stereo));
+                }
+            }
+            _ => {}
+        }
+        if cancel {
+            self.model_choice = None;
+        }
+        if let Some((id, stereo)) = apply {
             self.choose_model(&id, stereo);
         }
     }
@@ -1736,23 +1804,45 @@ fn segmented<T: Copy + PartialEq>(ui: &mut Ui, value: &mut T, options: &[(T, &st
     });
 }
 
-/// A model in the models list; clicked when `pickable` and the model was picked.
-fn model_row(ui: &mut Ui, name: &str, current: bool, pickable: bool) -> bool {
+/// What a click on a model in the models list asked for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowClick {
+    None,
+    /// Clicked once: chosen, to be confirmed.
+    Pick,
+    /// Double-clicked: apply at once.
+    Apply,
+}
+
+/// A model in the models list, `chosen` while it waits for confirmation; clickable when
+/// `pickable` and not the model the block already has.
+fn model_row(ui: &mut Ui, name: &str, current: bool, chosen: bool, pickable: bool) -> RowClick {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), if pickable { Sense::click() } else { Sense::hover() });
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, pickable, name));
-    if current {
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListBoxOption, pickable, current || chosen, name));
+    if current || chosen {
         ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED_HI);
     } else if pickable && response.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::same(10), theme::RAISED);
     }
-    let font = if current { theme::semibold(14.0) } else { theme::regular(14.0) };
-    ui.painter().text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, name, font, if current { theme::TEXT } else { theme::TEXT_MID });
+    if chosen {
+        ui.painter().rect_stroke(rect, CornerRadius::same(10), Stroke::new(2.0, theme::ACCENT), StrokeKind::Inside);
+    }
+    let font = if current || chosen { theme::semibold(14.0) } else { theme::regular(14.0) };
+    ui.painter().text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, name, font, if current || chosen { theme::TEXT } else { theme::TEXT_MID });
     if current {
         let c = rect.right_center() - vec2(20.0, 0.0);
         let check = vec![c + vec2(-6.0, 0.0), c + vec2(-1.5, 4.5), c + vec2(6.0, -5.0)];
         ui.painter().add(Shape::line(check, Stroke::new(2.4, theme::ACCENT)));
     }
-    pickable && !current && response.clicked()
+    if !pickable || current {
+        RowClick::None
+    } else if response.double_clicked() {
+        RowClick::Apply
+    } else if response.clicked() {
+        RowClick::Pick
+    } else {
+        RowClick::None
+    }
 }
 
 /// An input or output of the chain, drawn as a pill centred in its cell; a narrow cell drops the
@@ -2641,6 +2731,56 @@ mod pedal_tests {
         app.selected_block = Some("block0".into());
         app.choose_model("HD2_AmpRevvGenRed", false);
         assert_eq!(sent_once(&device, chain_edit, 1), [Request::ChangeModel { block: 2, model: 545, cab: None }]);
+    }
+
+    fn harness_on(app: EditorApp) -> egui_kittest::Harness<'static, EditorApp> {
+        let mut app = Some(app);
+        let mut harness = egui_kittest::Harness::builder().with_size(vec2(1400.0, 1400.0)).build_eframe(move |cc| {
+            theme::install(&cc.egui_ctx);
+            app.take().unwrap()
+        });
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn one_click_on_a_model_only_chooses_it_and_replace_changes_the_block() {
+        let Some((mut app, device)) = chain_app() else { return };
+        app.selected_block = Some("block0".into());
+        app.panel = Panel::Models;
+        app.search = "Revv Gen Red".into();
+        let mut harness = harness_on(app);
+        harness.get_all_by_label("Revv Gen Red").next().unwrap().click();
+        harness.run();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(device.requests().iter().all(|(_, _, r)| !chain_edit(r)), "a click alone changes nothing");
+        harness.get_by_label("Replace").click();
+        harness.run();
+        assert_eq!(sent_once(&device, chain_edit, 1), [Request::ChangeModel { block: 2, model: 545, cab: None }]);
+    }
+
+    #[test]
+    fn undo_writes_back_the_chain_from_before_a_removal() {
+        let Some((app, device)) = chain_app() else { return };
+        let before = app.connection.as_ref().unwrap().document.clone();
+        let mut harness = harness_on(app);
+        harness.state_mut().remove_block("block1");
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        harness.run();
+        let sent = sent_once(&device, |r| matches!(r, Request::WriteDocument { .. }), 1);
+        assert_eq!(sent, [Request::WriteDocument { document: before }]);
+    }
+
+    #[test]
+    fn the_pedal_reporting_the_same_preset_again_keeps_what_can_be_undone() {
+        let Some((mut app, _device)) = on_nx_test(false) else { return };
+        app.history.push(Turn { block: "block0".into(), param: "Bass".into(), before: 0.2, after: 0.3 });
+        let document = app.connection.as_ref().unwrap().document.clone();
+        app.apply_loaded(Loaded { generation: 1, preset: crate::device::DevicePreset { name: "NX Test".into(), index: Some(6), document: document.clone(), modified: true } });
+        assert!(app.history.undo(&[]).is_some());
+        app.history.redo(&[]);
+        app.apply_loaded(Loaded { generation: 2, preset: crate::device::DevicePreset { name: "Other".into(), index: Some(5), document, modified: false } });
+        assert!(app.history.undo(&[]).is_none(), "another preset starts afresh");
     }
 
     #[test]
