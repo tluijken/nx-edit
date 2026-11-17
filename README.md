@@ -56,6 +56,64 @@ each [release](https://github.com/tluijken/nx-edit/releases). They are not signe
 
 The macOS builds are compiled but have not been tried against a pedal yet.
 
+## Installing on Linux
+
+nx-edit needs access to the pedal's USB device. The distribution packages install a udev rule,
+`/usr/lib/udev/rules.d/70-nx-edit.rules`, that gives the logged-in user access to Line 6 devices
+(vendor `0e41`, HX Stomp `0e41:4246`); reconnect the pedal after installing so it applies. For the
+tarball and the Flatpak, add the rule yourself:
+
+```sh
+echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="0e41", TAG+="uaccess"' | sudo tee /etc/udev/rules.d/70-nx-edit.rules
+sudo udevadm control --reload-rules
+```
+
+and reconnect the pedal. `--import-hxedit` needs 7-Zip (`7z`) to unpack the HX Edit installer; the
+packages recommend it rather than require it, as an installed HX Edit folder needs no 7-Zip.
+
+Releases after v0.1.0 carry a `.deb` and an `.rpm` for x86_64 beside the tarball. On Debian, Ubuntu
+and their derivatives:
+
+```sh
+sudo apt install ./nx-edit_0.1.1-1_amd64.deb
+```
+
+On Fedora, openSUSE and other RPM distributions:
+
+```sh
+sudo dnf install ./nx-edit-0.1.1-1.x86_64.rpm
+```
+
+The AUR, COPR and Flathub packages below are prepared in [packaging/](packaging) but not published
+yet.
+
+On Arch Linux, from the AUR, with `makepkg` or an AUR helper:
+
+```sh
+yay -S nx-edit-bin
+```
+
+On Fedora, from COPR, built from source:
+
+```sh
+sudo dnf copr enable tluijken/nx-edit
+sudo dnf install nx-edit
+```
+
+As a Flatpak, from Flathub:
+
+```sh
+flatpak install flathub io.github.tluijken.NxEdit
+flatpak run io.github.tluijken.NxEdit --import-hxedit ~/Downloads/"HX Edit v3.82 Installer.exe"
+```
+
+The Flatpak includes 7-Zip. Its sandbox reads the installer only from the Downloads folder, and
+keeps the library in `~/.var/app/io.github.tluijken.NxEdit/data/nx-edit`.
+
+With the tarball, put `nx-edit` anywhere on your `PATH`; tarballs after v0.1.0 also hold the udev
+rule, the desktop entry and the icon. On Nix, see "Running"; on NixOS, add the rule with
+`services.udev.extraRules`.
+
 ## Running
 
 ```sh
@@ -87,7 +145,8 @@ nx-edit --import-hxedit <installer.exe | HX Edit folder>   import HX Edit's mode
 ```
 
 Your user needs access to the pedal's USB device (vendor `0e41`, HX Stomp `0e41:4246`), for example
-through a udev rule. While the pedal is passed through to a VM, nx-edit cannot reach it.
+through a udev rule (see "Installing on Linux"). While the pedal is passed through to a VM, nx-edit
+cannot reach it.
 
 ### Windows
 

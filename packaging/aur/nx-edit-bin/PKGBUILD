@@ -1,0 +1,46 @@
+# Maintainer: Thomas Luijken <github@luijken.dev>
+pkgname=nx-edit-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Editor for the Line 6 HX Stomp'
+arch=('x86_64')
+url='https://github.com/tluijken/nx-edit'
+license=('MIT')
+# eframe dlopens the windowing and GL libraries, so they are not visible as linked libraries.
+depends=('gcc-libs' 'glibc' 'libglvnd' 'libxkbcommon' 'wayland')
+optdepends=(
+  '7zip: import the model data from the HX Edit installer'
+  'vulkan-icd-loader: Vulkan rendering'
+  'libx11: X11 sessions'
+  'libxcursor: X11 sessions'
+  'libxrandr: X11 sessions'
+  'libxi: X11 sessions'
+  'libxkbcommon-x11: X11 sessions'
+)
+provides=('nx-edit')
+conflicts=('nx-edit')
+_appid=io.github.tluijken.NxEdit
+source=(
+  "$url/releases/download/v$pkgver/nx-edit-v$pkgver-linux-x86_64.tar.gz"
+  "$_appid-$pkgver.svg::https://raw.githubusercontent.com/tluijken/nx-edit/v$pkgver/assets/nx-edit.svg"
+  '70-nx-edit.rules'
+  "$_appid.desktop"
+  "$_appid.metainfo.xml"
+)
+sha256sums=('1ac75c8f20b73185f1a60ba01932f452c49419cbce7013e701b639afc1ceac07'
+            'cd45495a335b3d349c76af4ca925c68681b55dff827713feba0791714b88b533'
+            '6c9e2a668e3ad4bc560cfb1ebcac519c149a4bfaffd1d0beb4fdb5aef39283d1'
+            'b1b7b22cd71ce8c0199775287f0dbfb1fe1f4ef627ad59fcc172f10b389d4f9a'
+            'e32faba569b5ca07a72096f5aa1eb6155bed051b59283c05b1232f415a06778c')
+
+package() {
+  cd "nx-edit-v$pkgver-linux-x86_64"
+  install -Dm755 nx-edit "$pkgdir/usr/bin/nx-edit"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  cd "$srcdir"
+  install -Dm644 70-nx-edit.rules "$pkgdir/usr/lib/udev/rules.d/70-nx-edit.rules"
+  install -Dm644 "$_appid.desktop" "$pkgdir/usr/share/applications/$_appid.desktop"
+  install -Dm644 "$_appid.metainfo.xml" "$pkgdir/usr/share/metainfo/$_appid.metainfo.xml"
+  install -Dm644 "$_appid-$pkgver.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_appid.svg"
+}

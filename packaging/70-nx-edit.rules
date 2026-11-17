@@ -1,0 +1,2 @@
+# Line 6 devices, among them the HX Stomp (0e41:4246): give the logged-in user access for nx-edit.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0e41", TAG+="uaccess"

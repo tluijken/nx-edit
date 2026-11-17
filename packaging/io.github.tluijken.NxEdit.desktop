@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=nx-edit
+GenericName=HX Stomp editor
+Comment=Edit the presets of a Line 6 HX Stomp
+Exec=nx-edit %f
+Icon=io.github.tluijken.NxEdit
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=Line 6;Helix;HX Stomp;preset;guitar;
+StartupWMClass=nx-edit
