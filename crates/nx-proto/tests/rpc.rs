@@ -132,6 +132,29 @@ fn a_snapshot_colour_is_the_message_hx_edit_sends() {
 }
 
 #[test]
+fn renaming_a_snapshot_is_what_hx_edit_sends_in_capture_25() {
+    let lead = Request::RenameSnapshot { index: 1, name: "LEAD".into() };
+    assert_eq!(sent(&lead, 1020), "{102: 1020, 100: 89, 101: {92: 1, 109: \"LEAD\\0\"}}");
+    let Some(dir) = captures_dir() else { return };
+    let filter = Filter { endpoints: Some(vec![0x01]), ..Default::default() };
+    let mut reassembler = Reassembler::default();
+    let mut sent = Vec::new();
+    for t in read_transfers(File::open(dir.join("25-rename-snapshot.pcapng")).unwrap(), &filter).unwrap() {
+        for frame in split_transfer(&t.data).unwrap() {
+            for msg in reassembler.push(&frame).unwrap() {
+                if msg.from_host && msg.body.len() > 1
+                    && let Some((txn, request)) = Request::from_value(&msg.decode().unwrap())
+                {
+                    assert_eq!(request.encode(txn), msg.body);
+                    sent.push(request);
+                }
+            }
+        }
+    }
+    assert!(sent.contains(&Request::RenameSnapshot { index: 0, name: "TestShot".into() }), "{sent:?}");
+}
+
+#[test]
 fn removing_a_block_is_the_message_hx_edit_sends() {
     assert_eq!(sent(&Request::RemoveBlock { block: 1 }, 1014), "{102: 1014, 100: 28, 101: {98: 1}}");
 }

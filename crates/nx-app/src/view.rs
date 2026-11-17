@@ -115,6 +115,8 @@ pub struct EditorApp {
     closing: bool,
     /// A library preset whose place on the pedal is being chosen.
     assigning: Option<crate::assign::Assign>,
+    /// A snapshot being renamed, and the name typed so far.
+    renaming_snapshot: Option<(usize, String)>,
     /// A knob whose value is being typed: block, parameter and the text so far.
     typing: Option<(String, String, String)>,
     /// The models search field takes the keyboard when the models list is next drawn.
@@ -189,6 +191,7 @@ impl EditorApp {
             preset_filter: String::new(),
             focus_search: false,
             typing: None,
+            renaming_snapshot: None,
             scroll_to_current: true,
             catalog_problem: None,
         }
@@ -1815,13 +1818,52 @@ impl EditorApp {
         let colors = preset.snapshot_colors();
         let mut pick = None;
         let mut recolor = None;
+        let mut rename = None;
+        let mut start_rename = None;
+        let mut cancel_rename = false;
         for (i, name) in preset.snapshot_names().iter().enumerate() {
             let active = i == current;
+            if let Some((_, typed)) = self.renaming_snapshot.as_mut().filter(|(at, _)| *at == i) {
+                Frame::new().fill(theme::RAISED_HI).corner_radius(CornerRadius::same(12)).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let edit = ui.add(egui::TextEdit::singleline(typed).char_limit(nx_proto::SNAPSHOT_NAME_MAX).desired_width(ui.available_width() - 150.0));
+                        edit.widget_info(|| {
+                            let mut info = egui::WidgetInfo::text_edit(true, "", typed.as_str(), "");
+                            info.label = Some(format!("Name of snapshot {}", i + 1));
+                            info
+                        });
+                        if !edit.has_focus() && !edit.lost_focus() {
+                            edit.request_focus();
+                        }
+                        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if ui.button("Rename").clicked() || enter {
+                            rename = Some((i, typed.clone()));
+                        }
+                        if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            cancel_rename = true;
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                continue;
+            }
             let sense = if live { Sense::click() } else { Sense::hover() };
             let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), sense);
             response.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListBoxOption, live, active, format!("Snapshot {}: {name}", i + 1)));
             if response.clicked() && !active {
                 pick = Some(i);
+            }
+            if live && response.double_clicked() {
+                start_rename = Some((i, name.clone()));
+            }
+            if live {
+                response.context_menu(|ui| {
+                    if ui.button("Rename…").clicked() {
+                        start_rename = Some((i, name.clone()));
+                        ui.close();
+                    }
+                });
             }
             let painter = ui.painter();
             let fill = if active || (live && response.hovered()) { theme::RAISED_HI } else { theme::RAISED };
@@ -1829,6 +1871,8 @@ impl EditorApp {
             if active {
                 painter.rect_stroke(rect, CornerRadius::same(12), Stroke::new(2.0, theme::ACCENT), StrokeKind::Inside);
             }
+            focus_ring(ui, rect, &response);
+            let painter = ui.painter();
             let badge = Rect::from_center_size(pos2(rect.left() + 27.0, rect.center().y), vec2(30.0, 30.0));
             painter.rect_filled(badge, CornerRadius::same(9), if active { theme::ACCENT } else { theme::BG });
             painter.text(badge.center(), Align2::CENTER_CENTER, (i + 1).to_string(), mono(13.0), if active { theme::BG } else { theme::TEXT_DIM });
@@ -1839,10 +1883,46 @@ impl EditorApp {
             }
             ui.add_space(6.0);
         }
-        if let Some((index, color)) = recolor {
+        if live {
+            ui.label(RichText::new("Double-click a snapshot to rename it.").font(theme::regular(12.0)).color(theme::TEXT_DIM));
+        } else if self.preset.is_some() {
+            ui.label(RichText::new("Snapshots can be switched once the pedal is connected or a library file is open.").font(theme::regular(12.0)).color(theme::TEXT_DIM));
+        }
+        if cancel_rename {
+            self.renaming_snapshot = None;
+        }
+        if let Some(start) = start_rename {
+            self.renaming_snapshot = Some(start);
+        }
+        if let Some((index, name)) = rename {
+            self.rename_snapshot(index, &name);
+        } else if let Some((index, color)) = recolor {
             self.set_snapshot_color(index, color);
         } else if let Some(index) = pick {
             self.select_snapshot(index);
+        }
+    }
+
+    /// Names a snapshot, in the file or on the pedal (op 89). The pedal takes printable ASCII only.
+    fn rename_snapshot(&mut self, index: usize, name: &str) {
+        let name = name.trim();
+        if name.is_empty() || !name.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+            self.notices.error("A snapshot name needs letters, digits or punctuation without accents");
+            return;
+        }
+        self.renaming_snapshot = None;
+        if self.showing_file.is_some() {
+            if let Some(preset) = self.preset.as_mut() {
+                preset.set_snapshot_name(index, name);
+            }
+            self.unsaved = true;
+            return;
+        }
+        let Some(connection) = self.live() else { return };
+        connection.live.rename_snapshot(index as u64, name);
+        self.pedal_unsaved = true;
+        if let Some(preset) = self.preset.as_mut() {
+            preset.set_snapshot_name(index, name);
         }
     }
 
@@ -2893,6 +2973,26 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_is_renamed_from_its_context_menu() {
+        let file = library_file("snapshot-rename");
+        let mut harness = editor_on(&file);
+        harness.state_mut().panel = Panel::Snapshots;
+        harness.run();
+        let row = format!("Snapshot 2: {}", harness.state().preset.as_ref().unwrap().snapshot_names()[1]);
+        harness.get_by_role_and_label(egui::accesskit::Role::ListBoxOption, &row).click_secondary();
+        harness.run();
+        harness.get_by_label("Rename…").click();
+        harness.run();
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        harness.get_by_label("Name of snapshot 2").type_text("SOLO");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert_eq!(harness.state().preset.as_ref().unwrap().snapshot_names()[1], "SOLO");
+        assert!(harness.state().unsaved);
+    }
+
+    #[test]
     fn a_mic_is_picked_from_a_drop_down() {
         let file = library_file("mic-list");
         let Some(mut harness) = editor_with_catalog(&file, "block6") else { return };
@@ -2970,6 +3070,18 @@ mod pedal_tests {
         assert!(app.pedal_unsaved);
         drop(app);
         assert!(device.requests().into_iter().any(|(_, _, r)| r == nx_proto::Request::SetSnapshotColor { index: 2, color: 2 }));
+    }
+
+    #[test]
+    fn a_snapshot_on_the_pedal_is_renamed_with_op_89() {
+        let Some((mut app, device)) = on_nx_test(false) else { return };
+        app.rename_snapshot(1, " LEAD ");
+        assert_eq!(app.preset.as_ref().unwrap().snapshot_names()[1], "LEAD");
+        assert!(app.pedal_unsaved);
+        app.rename_snapshot(0, "Café");
+        assert!(app.notices.last().starts_with("A snapshot name needs"));
+        let sent = sent_once(&device, |r| matches!(r, Request::RenameSnapshot { .. }), 1);
+        assert_eq!(sent, [Request::RenameSnapshot { index: 1, name: "LEAD".into() }]);
     }
 
     #[test]

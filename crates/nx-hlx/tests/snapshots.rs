@@ -87,3 +87,12 @@ fn a_snapshot_colour_is_set_in_that_snapshot_only() {
     assert_eq!(raw(&preset)["data"]["tone"]["snapshot1"]["@ledcolor"], json!(9));
     assert!(!preset.set_snapshot_color(3, 2));
 }
+
+#[test]
+fn a_snapshot_is_renamed_as_one_the_user_named() {
+    let mut preset = revv_dm();
+    assert!(preset.set_snapshot_name(2, "SOLO"));
+    assert_eq!(preset.snapshot_names()[2], "SOLO");
+    assert_eq!(raw(&preset)["data"]["tone"]["snapshot2"]["@custom_name"], json!(true));
+    assert!(!preset.set_snapshot_name(3, "NONE"));
+}

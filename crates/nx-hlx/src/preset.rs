@@ -134,6 +134,16 @@ impl Preset {
         true
     }
 
+    /// Names a snapshot, as one the user named; false if the preset has no such snapshot.
+    pub fn set_snapshot_name(&mut self, index: usize, name: &str) -> bool {
+        let Some(snapshot) = self.raw.pointer_mut(&format!("/data/tone/snapshot{index}")).and_then(Value::as_object_mut) else {
+            return false;
+        };
+        snapshot.insert("@name".into(), Value::from(name));
+        snapshot.insert("@custom_name".into(), Value::Bool(true));
+        true
+    }
+
     /// Index of the active snapshot (`@current_snapshot` in `data.tone.global`), 0 when absent.
     pub fn current_snapshot(&self) -> usize {
         self.raw["data"]["tone"]["global"]["@current_snapshot"].as_u64().unwrap_or_default() as usize

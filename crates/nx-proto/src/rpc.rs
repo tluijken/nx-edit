@@ -37,6 +37,8 @@ pub enum Request {
     /// A snapshot's footswitch LED colour (op 98), numbered as HX Edit's menu from Auto (0); the
     /// pedal confirms with notification 48.
     SetSnapshotColor { index: u64, color: u64 },
+    /// Names a snapshot (op 89); the pedal confirms with notification 43 [seen, 25].
+    RenameSnapshot { index: u64, name: String },
     /// Stores the preset being edited at a place under `name` (op 71); the pedal saves its own edit
     /// buffer, so only the place and the name travel.
     SavePreset { setlist: u64, index: u64, name: String },
@@ -105,6 +107,7 @@ impl Request {
             Self::SelectBlock { .. } => 78,
             Self::SelectSnapshot { .. } => 88,
             Self::SetSnapshotColor { .. } => 98,
+            Self::RenameSnapshot { .. } => 89,
             Self::SavePreset { .. } => 71,
             Self::WritePreset { .. } => 8,
             Self::ControlBegin => 255,
@@ -138,6 +141,7 @@ impl Request {
             Self::SelectBlock { block, path } => map(vec![(98, int(*block)), (26, int(*path))]),
             Self::SelectSnapshot { index } => map(vec![(92, int(*index))]),
             Self::SetSnapshotColor { index, color } => map(vec![(92, int(*index)), (66, int(*color))]),
+            Self::RenameSnapshot { index, name } => map(vec![(92, int(*index)), (109, Value::from(format!("{name}\0")))]),
             Self::SavePreset { setlist, index, name } => {
                 map(vec![(107, int(*setlist)), (108, int(*index)), (109, Value::from(format!("{name}\0")))])
             }
@@ -214,6 +218,7 @@ impl Request {
             78 => Some(Self::SelectBlock { block: u(98)?, path: u(26)? }),
             88 => Some(Self::SelectSnapshot { index: u(92)? }),
             98 => Some(Self::SetSnapshotColor { index: u(92)?, color: u(66)? }),
+            89 => Some(Self::RenameSnapshot { index: u(92)?, name: get(a, 109)?.as_str()?.strip_suffix('\0')?.to_owned() }),
             71 => Some(Self::SavePreset {
                 setlist: u(107)?,
                 index: u(108)?,
