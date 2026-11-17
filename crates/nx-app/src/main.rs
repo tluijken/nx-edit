@@ -73,6 +73,7 @@ fn main() -> eframe::Result {
                     current: preset.index,
                     generation: 0,
                     syms,
+                    document: preset.document.clone(),
                 }),
                 None => None,
             };

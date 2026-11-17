@@ -40,6 +40,8 @@ pub struct Connection {
     pub generation: u64,
     /// Model names, to show a preset read after a switch.
     pub syms: nx_catalog::ModelSymbols,
+    /// The document of the preset shown, as the pedal last sent it; moving a block edits a copy.
+    pub document: Vec<u8>,
 }
 
 /// A knob being dragged: its block and parameter, the value it started at, and the pixels moved up.
@@ -249,6 +251,7 @@ impl EditorApp {
                 Some(ChainClick::Toggle(key)) => self.toggle_block(&key),
                 Some(ChainClick::Empty(position)) => self.select_empty(position),
                 Some(ChainClick::Remove(key)) => self.remove_block(&key),
+                Some(ChainClick::Move(key, position)) => self.move_block(&key, position),
                 None => {}
             }
         });
@@ -302,12 +305,29 @@ impl EditorApp {
             painter.line_segment([c - vec2(9.0, 0.0), c + vec2(9.0, 0.0)], Stroke::new(2.0, plus));
             painter.line_segment([c - vec2(0.0, 9.0), c + vec2(0.0, 9.0)], Stroke::new(2.0, plus));
         }
+        let mut dragging = None;
         for (row, lane) in lanes.iter().enumerate() {
             for tile in &lane.tiles {
                 let rect = grid.cell(usize::from(tile.position) + 1, row).shrink2(vec2(inset, (ROW_H - BLOCK_H) / 2.0));
-                let response = ui.interact(rect, ui.scope_id().with(("block", &tile.block_key)), Sense::click());
+                // Blocks of path A on the pedal move by dragging them to another position of it.
+                let movable = row == 0 && self.live().is_some();
+                let sense = if movable { Sense::click_and_drag() } else { Sense::click() };
+                let response = ui.interact(rect, ui.scope_id().with(("block", &tile.block_key)), sense);
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &tile.label));
                 if response.clicked() {
                     clicked = Some(ChainClick::Select(tile.block_key.clone()));
+                }
+                let pointer = response.interact_pointer_pos();
+                if response.dragged()
+                    && let Some(at) = pointer
+                {
+                    dragging = Some((tile, rect, at, grid.position_at(at)));
+                }
+                if response.drag_stopped()
+                    && let Some(position) = pointer.and_then(|at| grid.position_at(at))
+                    && position != tile.position
+                {
+                    clicked = Some(ChainClick::Move(tile.block_key.clone(), position));
                 }
                 if self.live().is_some() {
                     response.context_menu(|ui| {
@@ -326,6 +346,15 @@ impl EditorApp {
                 }
                 self.paint_block(painter, rect, tile);
             }
+        }
+        if let Some((tile, rect, at, target)) = dragging {
+            if let Some(position) = target.filter(|p| *p != tile.position) {
+                let drop = grid.cell(usize::from(position) + 1, 0).shrink2(vec2(inset, (ROW_H - BLOCK_H) / 2.0));
+                painter.rect_stroke(drop, CornerRadius::same(14), Stroke::new(2.0, theme::ACCENT), StrokeKind::Inside);
+            }
+            let ghost = rect.translate(at - rect.center());
+            painter.rect_filled(ghost, CornerRadius::same(14), theme::with_alpha(theme::RAISED_HI, 0xd0));
+            painter.text(ghost.center(), Align2::CENTER_CENTER, &tile.label, theme::semibold(13.0), theme::TEXT);
         }
         for x in nodes {
             painter.circle_filled(pos2(x, top), 16.0, theme::PANEL);
@@ -537,6 +566,30 @@ impl EditorApp {
         }
         self.pedal_unsaved = true;
         self.status = "Removing the block…".to_owned();
+    }
+
+    /// Moves a block of path A to `position`, trading places with what is there, by writing the
+    /// preset back with the two slots swapped (op 21), as HX Edit moves a block.
+    fn move_block(&mut self, key: &str, position: u8) {
+        let Some(connection) = self.live() else { return };
+        let Some(from) = connection.addresses.get(key).map(|a| a.slot) else { return };
+        let to = slot_of(0, position);
+        if from == to {
+            return;
+        }
+        let moved = nx_proto::Document::decode(&connection.document).and_then(|mut doc| {
+            doc.swap_slots(from as usize, to as usize)?;
+            doc.encode()
+        });
+        match moved {
+            Ok(document) => {
+                connection.live.write_document(connection.generation, document);
+                self.select_after_load = Some((0, position));
+                self.pedal_unsaved = true;
+                self.status = "Moving the block…".to_owned();
+            }
+            Err(e) => self.status = format!("Cannot move the block: {e}"),
+        }
     }
 
     /// The model's definition of a parameter of a block in the preset shown.
@@ -1063,6 +1116,7 @@ impl EditorApp {
             }
         };
         connection.addresses = addresses;
+        connection.document = loaded.document.clone();
         if let Some(entry) = connection.presets.iter_mut().find(|p| Some(p.index) == loaded.index) {
             entry.name = loaded.name.clone();
         }
@@ -1215,6 +1269,8 @@ enum ChainClick {
     /// An empty position of path A.
     Empty(u8),
     Remove(String),
+    /// A block dragged to a position of path A.
+    Move(String, u8),
 }
 
 /// The centre of a block tile's power icon.
@@ -1246,6 +1302,15 @@ impl Grid {
 
     fn cell(&self, column: usize, row: usize) -> Rect {
         Rect::from_min_size(self.origin + vec2(self.column * column as f32, ROW_H * row as f32), vec2(self.column, ROW_H))
+    }
+
+    /// The position of path A under `at`, if it is over one: column 0 is the input.
+    fn position_at(&self, at: Pos2) -> Option<u8> {
+        if !(self.origin.y..self.origin.y + ROW_H).contains(&at.y) {
+            return None;
+        }
+        let column = ((at.x - self.origin.x) / self.column).floor();
+        (1.0..=f32::from(PATH_POSITIONS)).contains(&column).then(|| column as u8 - 1)
     }
 }
 
@@ -1854,7 +1919,7 @@ mod pedal_tests {
         };
         let device = FakeDevice::new();
         let live = Live::start(Session::connect(device.transport()).unwrap());
-        Some((Connection { live, addresses: HashMap::new(), presets: Vec::new(), current: Some(0), generation: 0, syms }, device))
+        Some((Connection { live, addresses: HashMap::new(), presets: Vec::new(), current: Some(0), generation: 0, syms, document: Vec::new() }, device))
     }
 
     #[test]
@@ -2049,6 +2114,52 @@ mod pedal_tests {
         let Some((mut app, device)) = chain_app() else { return };
         app.remove_block("block1");
         assert_eq!(sent_once(&device, chain_edit, 1), [Request::RemoveBlock { block: 3 }]);
+    }
+
+    #[test]
+    fn moving_a_block_writes_the_document_with_its_slots_swapped() {
+        let Some((mut app, device)) = chain_app() else { return };
+        app.move_block("block0", 0);
+        let sent = sent_once(&device, |r| matches!(r, Request::WriteDocument { .. }), 1);
+        let [Request::WriteDocument { document }] = &sent[..] else { panic!("{sent:?}") };
+        let moved = nx_proto::Document::decode(document).unwrap().preset().unwrap();
+        let model_at = |slot| moved.blocks().find(|b| b.slot == slot).map(|b| b.block.model);
+        assert_eq!((model_at(1), model_at(2), model_at(3)), (Some(18), None, Some(693)), "the amp moved to slot 1, the cab stayed");
+    }
+
+    #[test]
+    fn dragging_a_block_onto_an_empty_slot_moves_it_there() {
+        let Some((app, device)) = chain_app() else { return };
+        let mut app = Some(app);
+        let mut harness = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |cc| {
+            theme::install(&cc.egui_ctx);
+            app.take().unwrap()
+        });
+        harness.run();
+        let from = harness.get_by_role_and_label(egui::accesskit::Role::Button, "Cali Rectifire").rect().center();
+        let to = harness.get_by_label("Empty slot 1").rect().center();
+        harness.hover_at(from);
+        harness.run();
+        harness.drag_at(from);
+        harness.run();
+        harness.hover_at(from.lerp(to, 0.5));
+        harness.run();
+        harness.hover_at(to);
+        harness.run();
+        harness.drop_at(to);
+        harness.run();
+        let sent = sent_once(&device, |r| matches!(r, Request::WriteDocument { .. }), 1);
+        let [Request::WriteDocument { document }] = &sent[..] else { panic!("{sent:?}") };
+        let moved = nx_proto::Document::decode(document).unwrap().preset().unwrap();
+        assert_eq!(moved.blocks().find(|b| b.slot == 1).map(|b| b.block.model), Some(18));
+    }
+
+    #[test]
+    fn a_block_dropped_on_its_own_place_writes_nothing() {
+        let Some((mut app, device)) = chain_app() else { return };
+        app.move_block("block0", 1);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(device.requests().iter().all(|(_, _, r)| !matches!(r, Request::WriteDocument { .. })));
     }
 
     #[test]
