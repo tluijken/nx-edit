@@ -59,6 +59,16 @@ impl Preset {
         self.raw["data"]["device_version"].as_u64().unwrap_or_default() as u32
     }
 
+    /// `data.meta.build_sha`: the HX Edit build that wrote the file.
+    pub fn build_sha(&self) -> Option<&str> {
+        self.raw["data"]["meta"]["build_sha"].as_str()
+    }
+
+    /// `data.tone` as read, including everything the accessors here do not interpret.
+    pub fn tone(&self) -> &Value {
+        &self.raw["data"]["tone"]
+    }
+
     pub fn blocks(&self) -> Vec<Block> {
         let Some(dsp0) = self.dsp0() else { return Vec::new() };
         let mut blocks: Vec<Block> = dsp0

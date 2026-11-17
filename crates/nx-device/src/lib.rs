@@ -2,4 +2,5 @@
 //! that edits them. Shared by the editor and by anything else that drives the pedal.
 
 pub mod device;
+pub mod import;
 pub mod live;

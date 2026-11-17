@@ -50,6 +50,7 @@ enum Command {
     /// A block inserted, given another model or removed, on the preset of `generation`.
     Chain { generation: u64, request: Request },
     Save { setlist: u64, index: u64, name: String },
+    Assign { setlist: u64, index: u64, name: String, document: Vec<u8> },
 }
 
 /// A preset read from the pedal, and the generation edits made on it must carry.
@@ -67,6 +68,8 @@ pub enum Update {
     Changed(u64, ParamChange),
     /// The pedal stored its edits at this place (op 71).
     Saved(u64),
+    /// A preset was written to this place (op 8), with the preset list read after it.
+    Assigned { index: u64, presets: Vec<nx_proto::PresetEntry> },
 }
 
 pub struct Live {
@@ -147,6 +150,12 @@ impl Live {
     /// Stores the pedal's edits at a place under `name` (op 71), reported as [`Update::Saved`].
     pub fn save(&self, setlist: u64, index: u64, name: &str) {
         self.send(Command::Save { setlist, index, name: name.to_owned() });
+    }
+
+    /// Writes a whole preset to a place under `name` (librarian op 8), as HX Edit imports a file;
+    /// reported as [`Update::Assigned`] with the preset list read again.
+    pub fn assign(&self, setlist: u64, index: u64, name: &str, document: Vec<u8>) {
+        self.send(Command::Assign { setlist, index, name: name.to_owned(), document });
     }
 
     /// What the pedal reported since the last call, in order.
@@ -320,6 +329,7 @@ impl Worker {
             Command::Save { setlist, index, name } => self.session.request(Request::SavePreset { setlist, index, name }).map(|_| {
                 _ = self.out.update.send(Update::Saved(index));
             }),
+            Command::Assign { setlist, index, name, document } => self.assign(setlist, index, name, document),
         };
         outcome.map_err(|e| {
             _ = self.out.report.send(format!("{e}; writing stopped"));
@@ -336,6 +346,19 @@ impl Worker {
             Param::Model(param) => Request::SetParam { block, path, param, value },
             Param::Extra(index) => Request::SetExtra { block, path, index, value },
         })?;
+        Ok(())
+    }
+
+    /// Op 255, op 8, op 254 and the preset list again, as HX Edit imports a file [seen, 19].
+    fn assign(&mut self, setlist: u64, index: u64, name: String, document: Vec<u8>) -> Result<(), Error> {
+        use nx_session::Channel::Control;
+        self.session.request_on(Control, Request::ControlBegin)?;
+        let written = self.session.request_on(Control, Request::WritePreset { setlist, index, name, document });
+        self.session.request_on(Control, Request::ControlStart)?;
+        written?;
+        let list = self.session.request_on(Control, Request::ListPresets { setlist })?;
+        let presets = nx_proto::parse_preset_list(&list).unwrap_or_default();
+        _ = self.out.update.send(Update::Assigned { index, presets });
         Ok(())
     }
 
@@ -475,7 +498,7 @@ mod tests {
             .into_iter()
             .find_map(|u| match u {
                 Update::Loaded(loaded) => Some(loaded),
-                Update::Changed(..) | Update::Saved(_) => None,
+                Update::Changed(..) | Update::Saved(_) | Update::Assigned { .. } => None,
             })
             .unwrap()
     }
@@ -753,5 +776,32 @@ mod tests {
         live.write_document(0, b"stale".to_vec());
         drop(live);
         assert!(sent(&device).iter().all(|r| !matches!(r, Request::WriteDocument { .. })));
+    }
+
+    #[test]
+    fn assigning_writes_the_place_between_ops_255_and_254_and_reports_the_new_list() {
+        let device = device(|req| match req {
+            Request::ListPresets { .. } => Reply::Ok(Value::Array(vec![Value::Map(vec![(
+                7.into(),
+                Value::Map(vec![(109.into(), "Revv Home\0".into())]),
+            )])])),
+            _ => Reply::Ok(Value::Nil),
+        });
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        live.assign(0, 7, "Revv Home", b"document".to_vec());
+        let mut assigned = Vec::new();
+        wait_until("assign not reported", || {
+            assigned.extend(live.updates().into_iter().filter_map(|u| match u {
+                Update::Assigned { index, presets } => Some((index, presets)),
+                _ => None,
+            }));
+            !assigned.is_empty()
+        });
+        assert_eq!(assigned[0].0, 7);
+        assert_eq!(assigned[0].1, [nx_proto::PresetEntry { index: 7, name: "Revv Home".into() }]);
+        let control: Vec<Request> =
+            device.requests().into_iter().filter(|(c, _, _)| *c == Channel::Control).map(|(_, _, r)| r).collect();
+        let write = Request::WritePreset { setlist: 0, index: 7, name: "Revv Home".into(), document: b"document".to_vec() };
+        assert_eq!(control, [Request::ControlBegin, write, Request::ControlStart, Request::ListPresets { setlist: 0 }]);
     }
 }
