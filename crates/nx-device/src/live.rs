@@ -21,8 +21,8 @@ use crate::device::{DevicePreset, Param, preset_from_session};
 
 /// Notifications after which the pedal's preset differs from what was read, so it is read again:
 /// preset switched (4) [seen, 02], snapshot loaded (46) [seen, 05], a block changed: enabled,
-/// model (49) [seen, 04, live-05].
-const READ_AGAIN: [u64; 3] = [4, 46, 49];
+/// model (49) [seen, 04, live-05], a document written with op 21 (21) [seen, 11].
+const READ_AGAIN: [u64; 4] = [4, 46, 49, 21];
 /// A preset switch is under way (8), before 4 [seen, 02]; addresses are stale from here on.
 const SWITCHING: u64 = 8;
 /// A parameter changed, by nx-edit or on the pedal: `{106: {98, 29, 26, 28, 119}}` like op 30 [seen,
@@ -47,6 +47,8 @@ enum Command {
     Select { setlist: u64, index: u64 },
     Snapshot(u64),
     Enabled { generation: u64, slot: u64, enabled: bool },
+    /// A block inserted, given another model or removed, on the preset of `generation`.
+    Chain { generation: u64, request: Request },
     Save { setlist: u64, index: u64, name: String },
 }
 
@@ -118,6 +120,28 @@ impl Live {
     /// Turns a block on or off (op 41) on the preset of `generation`; `slot` as op 30 addresses it.
     pub fn set_enabled(&self, generation: u64, slot: u64, enabled: bool) {
         self.send(Command::Enabled { generation, slot, enabled });
+    }
+
+    /// Puts `model` into the empty `slot` of the preset of `generation` (op 39). The pedal then
+    /// reports a block change, and the preset is read again.
+    pub fn insert(&self, generation: u64, slot: u64, model: u32, engine: u64) {
+        self.send(Command::Chain { generation, request: Request::InsertBlock { block: slot, model, engine, cab: None } });
+    }
+
+    /// Gives the block in `slot` another model (op 40); the pedal picks its engine.
+    pub fn change_model(&self, generation: u64, slot: u64, model: u32) {
+        self.send(Command::Chain { generation, request: Request::ChangeModel { block: slot, model, cab: None } });
+    }
+
+    /// Empties `slot` (op 28).
+    pub fn remove(&self, generation: u64, slot: u64) {
+        self.send(Command::Chain { generation, request: Request::RemoveBlock { block: slot } });
+    }
+
+    /// Replaces the preset of `generation` on the pedal with `document` (op 21), as HX Edit does to
+    /// move a block. The pedal confirms with notifications 20 and 21, and the preset is read again.
+    pub fn write_document(&self, generation: u64, document: Vec<u8>) {
+        self.send(Command::Chain { generation, request: Request::WriteDocument { document } });
     }
 
     /// Stores the pedal's edits at a place under `name` (op 71), reported as [`Update::Saved`].
@@ -285,7 +309,8 @@ impl Worker {
             Command::Enabled { generation, slot, enabled } if generation == self.generation => {
                 self.session.request(Request::SetBlockEnabled { block: slot, enabled }).map(drop)
             }
-            Command::Edit(_) | Command::Enabled { .. } => Ok(()),
+            Command::Chain { generation, request } if generation == self.generation => self.session.request(request).map(drop),
+            Command::Edit(_) | Command::Enabled { .. } | Command::Chain { .. } => Ok(()),
             Command::Select { setlist, index } => {
                 let outcome = self.session.request(Request::SelectPreset { setlist, index }).map(drop);
                 self.next_generation();
@@ -673,5 +698,60 @@ mod tests {
             !changes.is_empty()
         });
         assert_eq!(changes, [ParamChange { slot: 1, sub: 0, param: Param::Extra(0), value: Value::Boolean(true) }]);
+    }
+
+    #[test]
+    fn chain_edits_go_out_as_ops_39_40_and_28() {
+        let device = device(echo);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        live.insert(0, 2, 80, 8);
+        live.change_model(0, 2, 18);
+        live.remove(0, 2);
+        drop(live);
+        let chain: Vec<Request> = sent(&device)
+            .into_iter()
+            .filter(|r| matches!(r, Request::InsertBlock { .. } | Request::ChangeModel { .. } | Request::RemoveBlock { .. }))
+            .collect();
+        assert_eq!(
+            chain,
+            [
+                Request::InsertBlock { block: 2, model: 80, engine: 8, cab: None },
+                Request::ChangeModel { block: 2, model: 18, cab: None },
+                Request::RemoveBlock { block: 2 },
+            ]
+        );
+    }
+
+    #[test]
+    fn chain_edits_meant_for_an_older_preset_are_dropped() {
+        let device = pedal(NAMES);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        switched_to(&device, 3);
+        wait_for_load(&live);
+        live.insert(0, 2, 80, 8);
+        live.remove(0, 2);
+        drop(live);
+        assert!(sent(&device).iter().all(|r| !matches!(r, Request::InsertBlock { .. } | Request::RemoveBlock { .. })));
+    }
+
+    #[test]
+    fn a_rewritten_document_goes_out_as_op_21_and_is_read_again_once_written() {
+        let device = pedal(NAMES);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        live.write_document(0, b"moved".to_vec());
+        wait_until("op 21 not sent", || sent(&device).contains(&Request::WriteDocument { document: b"moved".to_vec() }));
+        device.notify(21, Value::Nil);
+        assert_eq!(wait_for_load(&live).preset.name, "Mark Lead");
+    }
+
+    #[test]
+    fn a_document_meant_for_an_older_preset_is_not_written() {
+        let device = pedal(NAMES);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        switched_to(&device, 3);
+        wait_for_load(&live);
+        live.write_document(0, b"stale".to_vec());
+        drop(live);
+        assert!(sent(&device).iter().all(|r| !matches!(r, Request::WriteDocument { .. })));
     }
 }

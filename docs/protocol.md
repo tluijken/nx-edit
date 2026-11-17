@@ -116,7 +116,14 @@ well; the document read afterwards has "TestShot" twice [seen].
 
 Moving a block (`11`) has no op of its own: HX Edit edits the document and writes the whole of it
 back with op 21 [seen]. Status 1 arrives while the 2.4 KB document is still being sent; notification
-20 for the transaction follows, then notification 21 (nil) [seen].
+20 for the transaction follows, then notification 21 (nil) [seen]. The document it writes is in HX
+Edit's own form, as with op 8 (see "A document as HX Edit writes it"): compared with the one the
+pedal returned after the reconnect in `12`, it has key 5's extra keys, 13-entry snapshot lists and
+nil slot-state flags, and the junctions' before-slot is 1 and 9 where the pedal stores 0 [seen].
+`Request::WriteDocument` encodes `11`'s document to the very bytes HX Edit sent. nx-edit moves a
+block by swapping two slots of the pedal's own document (`Document::swap_slots`, which also moves
+the snapshot slot states, controller assignments and cursor) and writing that back; whether the
+pedal accepts its own form there has not been tried.
 
 The trails switch of a delay (`12`) is op 30 with `29: false, 28: 0` on the delay's slot, value
 `true`/`false` [seen]. `28` is the parameter index in the model's order: turning the Cali
@@ -281,7 +288,8 @@ Layer 3. Revv DM's 20 slots are `input, 6 blocks, 2 empty, output, split, 6 empt
 | 1 | output | `{6: route, 7: values}`; route = hlx `@output` |
 | 2 | split | `{14: {5: route, 7: values}, 15: {8: model, 13: before-slot, 10: enabled, 7: values}, 18: true}` |
 | 3 | join | `{16: {6: route, 7: values}, 17: {8: model, 13: before-slot, 10: enabled, 7: values}, 18: true}` |
-| 6 | block | `{24: {23: false, 25: model, 26: -1}, 9: engine, 10: enabled, 11: values, 12: values}` |
+| 6 | block | `{24: {23: amp+cab, 25: model, 26: cab model or -1}, 9: engine, 10: enabled, 11: values, 12: the cab's values}` |
+| 7 | looper | `{8: model, 9: 22, 10: enabled, 7: values}` [seen, `31`]; `nx-proto` reads it as a block |
 | 8 | empty | nil |
 
 - **values** are `{2: count, 3: params, 4: [...]}`, floats in the model's own units (Drive 0.45,
@@ -311,8 +319,10 @@ Layer 3. Revv DM's 20 slots are `input, 6 blocks, 2 empty, output, split, 6 empt
   hlx path 1 positions 6 and 7 [seen, one preset].
 - The join stores B Level −60 where the hlx has −120 [seen]; presumably clamped to the device's
   minimum [inferred].
-- Not understood: block key 12 (always an empty values map), 24.23 (always false), 24.26 (always −1),
-  junction key 18 (true), split 14's empty values, DSP key 21.
+- An Amp+Cab block (`31`): `24.23` is true, `24.26` the cab's model (711, 4x10 Tweed P10R, with the
+  Tweed Blues Nrm amp) and key 12 the cab's 7 values; a lone amp or other block has false, -1 and an
+  empty key 12, as every block in session 1 had [seen].
+- Not understood: junction key 18 (true), split 14's empty values, DSP key 21.
 
 ### Controller assignments (key 4) [seen]
 
@@ -398,6 +408,41 @@ A document is written with op 21 (the edit buffer) or librarian op 8 (a place), 
 key `110` with the same envelope and section table as op 22 returns [seen, `11`, `19`, `20`]. HX
 Edit's own documents always carry a correct table, so whether the device checks it is still
 untested.
+
+### A document as HX Edit writes it [seen, `19` and `30`]
+
+`19` holds the 2880-byte document HX Edit sent with op 8 for `Revv_Home.hlx`, and `30` the
+2762-byte document the pedal returned for that place (op 22). The pedal accepts HX Edit's form and
+normalises it when it stores the preset. Compared key by key, HX Edit's form differs in:
+
+- `7.37`: HX Edit's own build (`v3.60-56-g73ae345`), not the firmware's;
+- key 5 also holds 111-116 (1.0 each), 380 and 381 (2), 252 and 253 (0), which the pedal drops;
+- each snapshot's key 1 has 13 entries instead of 11, and the first element of every slot state
+  (`3.N.0`) is nil instead of false, which `Document::decode` rejects today;
+- the junctions' `before-slot` is 7 and 9 for an unused path B, where the pedal stores 0;
+- controller assignments come in another order.
+
+Every other value is the same. That makes `19` the byte-for-byte target for an `.hlx` to document
+encoder, which "Assign to a place" (branch `feat/assign`) needs before its Replace button can work.
+
+A block's engine (slot key 9) is in none of HX Edit's data files. Op 39 (insert) carries it, op 40
+(change model) does not, and the pedal's reply to both holds the whole slot with it. `31` changed one
+block through every category; the engine follows the model's `category` in HX Edit's `*.models`
+[seen for one or two models per category, inferred for the rest]:
+
+| model `category` | blocks | engine |
+|---|---|---|
+| 3, 4, 6, 7, 8, 11, 14, 17 | distortion, dynamics, filter, pitch/synth, modulation, wah, EQ, volume/pan | 1 |
+| 9, 10 | delay, reverb | 8 |
+| 1, 13 | amp, preamp | 17; an amp with a cab (`24.23` true) 33 |
+| 19 | cab (Mic IR), single and the 2x12 tried | 31 |
+| 16 | IR | 19 |
+| 15 | looper | 22 |
+| 12 | send/return | per model: Send 1 25, Send 2 26 |
+
+In `19`, `@type` 0 (Scream 808, EQ) had engine 1, 1 (amp) 17, 2 (cab) 31 and 7 (delay, reverb) 8, which
+fits the table. Not seen: returns and FX loops, the legacy cabs of `cab.models`, gates, stereo
+variants (none could be picked on the HX Stomp).
 
 The setters never change what the device wrote: `set_param` keeps a value's type and encoding (an
 integer stays an integer of the same width, an f32 stays f32) and rejects a value that type cannot
@@ -535,6 +580,11 @@ retried.
 ## Open questions
 
 - Whether the device checks the section table of a document written with op 21 or op 8.
+- Whether op 21 takes the pedal's own document form, or only HX Edit's; the safe first try is
+  writing back the unchanged document the pedal just returned.
+- The engine of returns, FX loops, legacy cabs (`cab.models`) and gates; see "A document as HX Edit
+  writes it". Op 33 `{102: 5}`, which HX Edit sends after an Amp+Cab or looper model change, and
+  notifications 31 `{98, 70, 79}` and 34 that come with it (`31`).
 - Op 109 in a backup (three calls per id for 372 ids, keys 64, 105, 106), the `116` word of
   notification 5, list keys 123-125, and globals 96-99.
 - Why op 255 took a second before the export in `18` and two milliseconds everywhere else.

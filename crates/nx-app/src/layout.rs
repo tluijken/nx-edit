@@ -55,6 +55,21 @@ pub fn lanes(preset: &Preset, catalog: Option<&Catalog>) -> Vec<Lane> {
     lanes
 }
 
+/// Block positions on each path of the HX Stomp.
+pub const PATH_POSITIONS: u8 = 8;
+
+/// The positions of path A that hold no block.
+pub fn empty_positions(preset: &Preset) -> Vec<u8> {
+    let used: Vec<u8> = preset.blocks().iter().filter(|b| b.path == 0).map(|b| b.position).collect();
+    (0..PATH_POSITIONS).filter(|p| !used.contains(p)).collect()
+}
+
+/// The document slot of a path position, as ops 28, 39 and 40 address it: slot 0 is the input,
+/// 1-8 path A, 9 the output and 10 the split, 11-18 path B [seen: Revv DM, slots 1-8 and 17].
+pub fn slot_of(path: u8, position: u8) -> u64 {
+    u64::from(position) + if path == 0 { 1 } else { 11 }
+}
+
 /// Where path 1 leaves path 0 and comes back, in slot positions: the branch starts before slot
 /// `split` and rejoins before slot `join`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +161,44 @@ pub fn wire_value(value: &serde_json::Value) -> Option<rmpv::Value> {
         serde_json::Value::Number(n) => n.as_i64().map(rmpv::Value::from),
         _ => None,
     }
+}
+
+/// How a parameter is set in the editor.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Control {
+    /// Dragged up and down.
+    Knob,
+    /// A row of buttons, one per option: switches, and the short lists HX Edit shows side by side.
+    Buttons(Vec<String>),
+    /// A drop-down of named options.
+    List(Vec<String>),
+}
+
+/// The editor's control for a parameter: switches and HX Edit's segmented lists as buttons, other
+/// named lists as a drop-down, anything else as a knob.
+pub fn control_for(def: &nx_catalog::ParamDef, catalog: Option<&Catalog>) -> Control {
+    let display = def.display_type.as_deref().unwrap_or_default();
+    let named = catalog.and_then(|c| c.options(display)).map(<[String]>::to_vec);
+    match def.value_type {
+        SWITCH => Control::Buttons(named.filter(|n| n.len() == 2).unwrap_or_else(|| vec!["Off".into(), "On".into()])),
+        INTEGER => match named {
+            Some(names) if catalog.is_some_and(|c| c.segmented(display)) => Control::Buttons(names),
+            Some(names) => Control::List(names),
+            None => Control::Knob,
+        },
+        _ => Control::Knob,
+    }
+}
+
+/// Which option a value is, counted from the parameter's minimum; a switch's off is 0.
+pub fn chosen(value: &serde_json::Value, def: &nx_catalog::ParamDef) -> Option<usize> {
+    let v = value.as_bool().map_or_else(|| value.as_f64(), |on| Some(f64::from(u8::from(on))))?;
+    usize::try_from((v - def.min.unwrap_or_default()).round() as i64).ok()
+}
+
+/// The value of option `index`, as `set_param` takes it.
+pub fn choice_value(index: usize, def: &nx_catalog::ParamDef) -> f64 {
+    def.min.unwrap_or_default() + index as f64
 }
 
 #[cfg(test)]
@@ -362,6 +415,56 @@ mod tests {
         let ts = lanes[0].tiles.iter().find(|t| t.label == "Scream 808").unwrap();
         assert_eq!(ts.category_color, Some(0xf5901e));
         assert_eq!(ts.category.as_deref(), Some("Distortion"));
+    }
+
+    fn kind(value_type: u8, display: &str, min: f64, max: f64) -> nx_catalog::ParamDef {
+        let mut def = list(min, max);
+        (def.value_type, def.display_type) = (value_type, Some(display.to_owned()));
+        def
+    }
+
+    #[test]
+    fn a_switch_is_a_pair_of_buttons_named_as_hx_edit_names_them() {
+        let cat = catalog();
+        assert_eq!(control_for(&kind(2, "off_on", 0.0, 1.0), Some(&cat)), Control::Buttons(vec!["Off".into(), "On".into()]));
+        assert_eq!(control_for(&kind(2, "unknown", 0.0, 1.0), Some(&cat)), Control::Buttons(vec!["Off".into(), "On".into()]));
+        assert_eq!(control_for(&kind(2, "off_on", 0.0, 1.0), None), Control::Buttons(vec!["Off".into(), "On".into()]));
+    }
+
+    #[test]
+    fn a_long_list_is_a_drop_down_and_a_plain_integer_a_knob() {
+        let cat = catalog();
+        let mics = vec!["Mic One".to_owned(), "Mic Two".into(), "Mic Three".into()];
+        assert_eq!(control_for(&kind(0, "test_mics", 0.0, 2.0), Some(&cat)), Control::List(mics));
+        assert_eq!(control_for(&kind(0, "integer_slider", 0.0, 2.0), Some(&cat)), Control::Knob);
+        assert_eq!(control_for(&kind(1, "generic_knob", 0.0, 1.0), Some(&cat)), Control::Knob);
+    }
+
+    #[test]
+    fn a_short_segmented_list_is_buttons() {
+        let cat = catalog();
+        assert_eq!(control_for(&kind(0, "off_on", 0.0, 1.0), Some(&cat)), Control::Buttons(vec!["Off".into(), "On".into()]));
+    }
+
+    #[test]
+    fn a_choice_is_the_option_index_from_the_minimum() {
+        let sync = kind(0, "sync_note", 1.0, 19.0);
+        assert_eq!(chosen(&serde_json::json!(6), &sync), Some(5));
+        assert_eq!(chosen(&serde_json::json!(true), &kind(2, "off_on", 0.0, 1.0)), Some(1));
+        assert_eq!(choice_value(5, &sync), 6.0);
+        assert_eq!(choice_value(1, &kind(2, "off_on", 0.0, 1.0)), 1.0);
+    }
+
+    #[test]
+    fn the_free_places_of_path_a_are_the_positions_without_a_block() {
+        assert_eq!(empty_positions(&preset("Revv_DM.hlx")), [6, 7]);
+    }
+
+    #[test]
+    fn path_a_positions_are_slots_one_to_eight() {
+        assert_eq!(slot_of(0, 0), 1);
+        assert_eq!(slot_of(0, 7), 8);
+        assert_eq!(slot_of(1, 6), 17, "Revv DM's cab: path B position 6 is slot 17");
     }
 }
 

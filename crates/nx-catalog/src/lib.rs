@@ -4,6 +4,7 @@
 
 mod categories;
 mod controls;
+mod engine;
 mod import;
 mod models;
 mod symbols;
@@ -12,6 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub use categories::{Category, CategoryGroup};
+pub use engine::{AMP_WITH_CAB, engine};
 pub use import::{default_res_dir, import_hxedit, import_installer};
 pub use models::{ModelDef, ParamDef};
 pub use symbols::{ModelSymbol, ModelSymbols, shared_id};
@@ -32,7 +34,7 @@ pub enum CatalogError {
 pub struct Catalog {
     models: HashMap<String, ModelDef>,
     categories: Vec<Category>,
-    options: HashMap<String, Vec<String>>,
+    controls: HashMap<String, controls::Control>,
 }
 
 impl Catalog {
@@ -44,8 +46,8 @@ impl Catalog {
             }
         }
         let categories = categories::read_categories(&res_dir.join("HX_ModelCatalog.json"))?;
-        let options = controls::read_options(&res_dir.join("HelixControls.json"))?;
-        Ok(Self { models, categories, options })
+        let controls = controls::read_controls(&res_dir.join("HelixControls.json"))?;
+        Ok(Self { models, categories, controls })
     }
 
     pub fn model(&self, id: &str) -> Option<&ModelDef> {
@@ -59,7 +61,12 @@ impl Catalog {
     /// The names of a discrete control's options, by a parameter's display type: index 0 names the
     /// parameter's minimum.
     pub fn options(&self, display_type: &str) -> Option<&[String]> {
-        self.options.get(display_type).map(Vec::as_slice)
+        self.controls.get(display_type).map(|c| c.options.as_slice())
+    }
+
+    /// Whether HX Edit shows a discrete control's options side by side rather than as a list.
+    pub fn segmented(&self, display_type: &str) -> bool {
+        self.controls.get(display_type).is_some_and(|c| c.segmented)
     }
 
     pub fn len(&self) -> usize {

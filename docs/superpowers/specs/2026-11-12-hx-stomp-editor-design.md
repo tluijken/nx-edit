@@ -169,9 +169,8 @@ Proposed: the visual vocabulary (block tiles, toggles, knobs) follows Scythe's g
    credentials.
 3. **Decoder first.** `nx-capture` decodes captures into messages; decoded captures become test fixtures
    for `nx-proto` (encode/decode round trips byte for byte).
-4. **Decompile where needed.** HX Edit and its bundled libraries are analysed with Ghidra (available in
-   Scythe's devbox; the REA MCP server needs repairing first). Focus: checksums and validation, error
-   paths, the firmware update sequence, the account/download flow.
+4. **Static inspection where captures cannot answer.** Limited to what interoperability needs (import
+   tables, strings); no code of HX Edit is reproduced. Firmware updates stay with HX Edit.
 5. **Network flows.** The Line 6 login and firmware download are observed from inside the VM through an
    intercepting proxy, with Thomas's own account. Tokens and passwords are scrubbed from anything stored.
 

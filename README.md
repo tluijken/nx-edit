@@ -5,17 +5,28 @@ speaks the pedal's USB protocol directly. Line 6 never published that protocol; 
 from USB captures of HX Edit and static analysis of its Windows binary, with tonepush's protocol
 notes as a starting map (see [docs/protocol.md](docs/protocol.md)).
 
+nx-edit exists because Line 6 offers no HX Edit for Linux. The protocol was studied only as far as
+an independently written editor needs to work with the pedal, mostly by observing HX Edit's USB
+traffic, as the EU Software Directive (2009/24/EC, articles 5(3) and 6) allows for interoperability.
+nx-edit contains no code or data of Line 6; the model data it shows is imported from the user's own
+HX Edit installation.
+
 ![nx-edit](docs/nx-edit-design.png)
 
-Tested against an HX Stomp on firmware 3.71, with HX Edit 3.82 as the reference.
+Tested against an HX Stomp on firmware 3.71, with HX Edit 3.82 as the reference, on NixOS and in a
+Windows 11 VM.
 
 ## What it does
 
 - Reads the current preset from the pedal and draws its signal chain, including path B splits and
   joins.
-- Turns knobs, switches blocks on and off and changes snapshots on the pedal. It follows edits made
-  on the pedal itself, and undo and redo work for knob turns. Save (Ctrl+S) stores the edits in the
-  preset's own place on the pedal.
+- Turns knobs, picks list values such as a cab's mic by name, flips switches and a delay's or
+  reverb's trails, switches blocks on and off and changes snapshots on the pedal. It follows edits
+  made on the pedal itself, and undo and redo work for knob turns. Save (Ctrl+S) stores the edits in
+  the preset's own place on the pedal, and nx-edit asks before a preset switch would drop them.
+- Edits the pedal's chain on path A: click an empty slot and pick a model to add a block, pick a
+  model with a block selected to change it, remove a block from its context menu, or drag it to
+  another position.
 - Lists the pedal's presets and follows preset switches.
 - Keeps a library of `.hlx` files beside the pedal's list. You can drop files in, rename them and
   move them to the trash. Library presets can be edited offline and saved (Ctrl+S); nx-edit asks
@@ -24,11 +35,26 @@ Tested against an HX Stomp on firmware 3.71, with HX Edit 3.82 as the reference.
 
 ## Not yet
 
-- Exporting the pedal's preset as an `.hlx` that HX Edit accepts.
-- Importing a preset onto the pedal ("assign to the pedal").
-- Firmware updates.
+- Exporting the pedal's preset as an `.hlx` that HX Edit accepts: the conversion writes 60 of the
+  132 values HX Edit's export holds ([docs/protocol.md](docs/protocol.md), "Compared with HX Edit's
+  export").
+- Importing a preset onto the pedal ("assign to the pedal"): the place can be chosen on branch
+  `feat/assign`, but writing the preset waits on captures of more block types
+  ([docs/capture.md](docs/capture.md), "Next session").
+- Firmware updates; those stay with HX Edit.
 
-These wait on more captures; [docs/capture.md](docs/capture.md) lists what each one needs.
+## Download
+
+Builds for Linux (x86_64), Windows (x86_64) and macOS (Apple Silicon and Intel) are attached to
+each [release](https://github.com/tluijken/nx-edit/releases). They are not signed:
+
+- Windows SmartScreen and macOS Gatekeeper warn on first start. On macOS, clear the quarantine flag
+  with `xattr -d com.apple.quarantine nx-edit`.
+- On Linux, nx-edit loads the X11 or Wayland libraries and OpenGL of the desktop it runs on, and
+  needs access to the pedal's USB device (see below).
+- On Windows, it uses the USB driver HX Edit installed (see "Windows").
+
+The macOS builds are compiled but have not been tried against a pedal yet.
 
 ## Running
 
@@ -99,6 +125,7 @@ prefix.
 | `nx-usb` | USB transport to the pedal |
 | `nx-proto` | frames, messages and the preset document |
 | `nx-session` | session handling: sequence numbers, acknowledgements, keep-alives |
+| `nx-device` | reading the pedal's presets and editing them live, and converting them to `.hlx` |
 | `nx-hlx` | reading and editing `.hlx` preset files |
 | `nx-catalog` | model and parameter catalog from HX Edit's data |
 | `nx-customtone` | line6.com sign-in and the CustomTone listing |

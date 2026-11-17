@@ -141,7 +141,7 @@ impl Document {
         let (kind, body) = self.slot_body_mut(slot)?;
         let values = match kind {
             KIND_BLOCK => body.get_mut(11),
-            KIND_INPUT | KIND_OUTPUT => body.get_mut(7),
+            KIND_INPUT | KIND_OUTPUT | KIND_LOOPER => body.get_mut(7),
             KIND_SPLIT => body.get_mut(15).and_then(|j| j.get_mut(7)),
             KIND_JOIN => body.get_mut(17).and_then(|j| j.get_mut(7)),
             _ => None,
@@ -160,7 +160,7 @@ impl Document {
     pub fn set_enabled(&mut self, slot: usize, enabled: bool) -> Result<(), DocError> {
         let (kind, body) = self.slot_body_mut(slot)?;
         let flag = match kind {
-            KIND_BLOCK => body.get_mut(10),
+            KIND_BLOCK | KIND_LOOPER => body.get_mut(10),
             KIND_SPLIT => body.get_mut(15).and_then(|j| j.get_mut(10)),
             KIND_JOIN => body.get_mut(17).and_then(|j| j.get_mut(10)),
             _ => None,
@@ -218,6 +218,53 @@ impl Document {
         Ok(())
     }
 
+    /// Exchanges two slots of one path of DSP 0, a block with another block or with an empty slot,
+    /// together with everything that refers to them by slot number: each snapshot's slot states, the
+    /// snapshot list's per-slot flags (key 13), controller assignments and the cursor. A block moves
+    /// this way; the edited document is then written back with op 21.
+    pub fn swap_slots(&mut self, a: usize, b: usize) -> Result<(), DocError> {
+        let path = |slot: usize| match slot {
+            1..=8 => Some(0),
+            11..=18 => Some(1),
+            _ => None,
+        };
+        if path(a).is_none() || path(a) != path(b) {
+            return Err(DocError::Value(format!("slots {a} and {b} are not block slots of one path")));
+        }
+        for slot in [a, b] {
+            let (kind, _) = self.slot_body_mut(slot)?;
+            if ![KIND_BLOCK, KIND_LOOPER, KIND_EMPTY].contains(&kind) {
+                return Err(DocError::Value(format!("slot {slot} holds neither a block nor nothing")));
+            }
+        }
+        swap_entries(self.tone.get_mut(0).and_then(|d| d.get_mut(22)), a, b, "slots")?;
+        let snaps = self.tone.get_mut(10).ok_or_else(|| shape("no snapshots (key 10)"))?;
+        if let Some(Item::Array(list, _)) = snaps.get_mut(10) {
+            for snapshot in list {
+                swap_entries(snapshot.get_mut(3), a, b, "snapshot slot states")?;
+            }
+        }
+        if snaps.get(13).is_some() {
+            swap_entries(snaps.get_mut(13), a, b, "snapshot slot flags")?;
+        }
+        if let Some(Item::Array(controllers, _)) = self.tone.get_mut(4) {
+            for assignments in controllers.iter_mut().filter_map(|c| match c {
+                Item::Array(list, _) => Some(list),
+                _ => None,
+            }) {
+                for assignment in assignments {
+                    if let Some(slot) = assignment.get_mut(1).and_then(|a| a.get_mut(5)) {
+                        exchange(slot, a, b);
+                    }
+                }
+            }
+        }
+        if let Some(slot) = self.tone.get_mut(6).and_then(|c| c.get_mut(98)) {
+            exchange(slot, a, b);
+        }
+        Ok(())
+    }
+
     fn snapshot_count(&self) -> usize {
         self.tone.get(10).and_then(|s| s.get(10)).and_then(Item::as_array).map_or(0, <[Item]>::len)
     }
@@ -232,6 +279,30 @@ impl Document {
         let kind = entry.get(19).and_then(Item::as_int).ok_or_else(|| shape(format!("slot {slot} has no kind")))?;
         let body = entry.get_mut(20).ok_or_else(|| shape(format!("slot {slot} has no body")))?;
         Ok((kind, body))
+    }
+}
+
+fn swap_entries(list: Option<&mut Item>, a: usize, b: usize, what: &str) -> Result<(), DocError> {
+    match list {
+        Some(Item::Array(items, _)) if a < items.len() && b < items.len() => {
+            items.swap(a, b);
+            Ok(())
+        }
+        _ => Err(shape(format!("{what} do not reach slots {a} and {b}"))),
+    }
+}
+
+/// A slot number referring to `a` now refers to `b` and the other way round, in the same encoding.
+fn exchange(slot: &mut Item, a: usize, b: usize) {
+    if let Item::Int(v, form) = slot {
+        let now = match *v {
+            v if v == a as i64 => b as i64,
+            v if v == b as i64 => a as i64,
+            v => v,
+        };
+        if tree::fits(now, *form) {
+            *v = now;
+        }
     }
 }
 
@@ -251,6 +322,8 @@ const KIND_OUTPUT: i64 = 1;
 const KIND_SPLIT: i64 = 2;
 const KIND_JOIN: i64 = 3;
 const KIND_BLOCK: i64 = 6;
+/// A looper: `{8: model, 9: engine 22, 10: enabled, 7: values}` [seen, capture 31].
+const KIND_LOOPER: i64 = 7;
 const KIND_EMPTY: i64 = 8;
 
 /// A parameter value. Floats are in the model's own units (Drive 0..1, a frequency in Hz).
@@ -348,9 +421,9 @@ pub struct Block {
     /// On or off in the current state, which follows the active snapshot.
     pub enabled: bool,
     pub values: Values,
-    /// Key 12, empty in every captured block.
+    /// Key 12: the cab's values when the block is an amp with a cab, empty otherwise.
     pub extra: Values,
-    /// Key 24 as read: `{23: false, 25: model, 26: -1}`; 23 and 26 are not understood.
+    /// Key 24 as read: `{23: amp with cab, 25: model, 26: cab or -1}`; nil for a looper.
     pub header: Item,
 }
 
@@ -528,6 +601,14 @@ fn slot(item: &Item, index: usize) -> Result<SlotKind, DocError> {
                 header: header.clone(),
             })
         }
+        KIND_LOOPER => SlotKind::Block(Block {
+            model: int_at(body, 8, &what)? as u32,
+            engine: int_at(body, 9, &what)?,
+            enabled: bool_at(body, 10, &what)?,
+            values: values(field(body, 7, &what)?, &what)?,
+            extra: Values { count: 0, params: 0, values: Vec::new() },
+            header: Item::Nil,
+        }),
         KIND_EMPTY => SlotKind::Empty,
         kind => SlotKind::Unknown { kind, body: body.clone() },
     })

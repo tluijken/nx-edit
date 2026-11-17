@@ -22,6 +22,16 @@ pub enum Request {
     /// being a delay's or reverb's trails switch.
     SetExtra { block: u64, path: u64, index: u64, value: Value },
     SetBlockEnabled { block: u64, enabled: bool },
+    /// Puts a model into an empty slot (op 39); the pedal answers with the whole slot, its values at
+    /// the model's defaults. `cab` makes it an amp with a cab, by the cab's model number.
+    InsertBlock { block: u64, model: u32, engine: u64, cab: Option<u32> },
+    /// Gives a block another model (op 40); the pedal picks the engine and answers like op 39.
+    ChangeModel { block: u64, model: u32, cab: Option<u32> },
+    /// Empties a slot (op 28).
+    RemoveBlock { block: u64 },
+    /// Replaces the preset being edited with `document` (op 21); deferred, completed by notification
+    /// 20 and followed by notification 21.
+    WriteDocument { document: Vec<u8> },
     SelectBlock { block: u64, path: u64 },
     SelectSnapshot { index: u64 },
     /// Stores the preset being edited at a place under `name` (op 71); the pedal saves its own edit
@@ -52,6 +62,20 @@ fn set(block: u64, model_param: bool, path: u64, at: u64, value: &Value) -> Valu
     map(vec![(98, int(block)), (29, Value::Boolean(model_param)), (26, int(path)), (28, int(at)), (119, value.clone())])
 }
 
+/// A block's model as ops 39 and 40 carry it: `{23: amp with cab, 25: model, 26: cab or -1}`.
+fn model_ref(model: u32, cab: Option<u32>) -> Value {
+    let cab_value = cab.map_or(Value::from(-1), |c| int(u64::from(c)));
+    map(vec![(23, Value::Boolean(cab.is_some())), (25, int(u64::from(model))), (26, cab_value)])
+}
+
+/// The model and cab of `{23, 25, 26}`, as ops 39 and 40 carry them.
+fn parse_model_ref(v: &Value) -> Option<(u32, Option<u32>)> {
+    let m = v.as_map()?;
+    let model = u32::try_from(get(m, 25)?.as_u64()?).ok()?;
+    let cab = if get(m, 23)?.as_bool()? { Some(u32::try_from(get(m, 26)?.as_u64()?).ok()?) } else { None };
+    Some((model, cab))
+}
+
 fn get(m: &[(Value, Value)], key: u64) -> Option<&Value> {
     m.iter().find(|(k, _)| k.as_u64() == Some(key)).map(|(_, v)| v)
 }
@@ -65,6 +89,10 @@ impl Request {
             Self::ReadGlobal { .. } => 24,
             Self::SetParam { .. } | Self::SetExtra { .. } => 30,
             Self::SetBlockEnabled { .. } => 41,
+            Self::InsertBlock { .. } => 39,
+            Self::ChangeModel { .. } => 40,
+            Self::RemoveBlock { .. } => 28,
+            Self::WriteDocument { .. } => 21,
             Self::SelectBlock { .. } => 78,
             Self::SelectSnapshot { .. } => 88,
             Self::SavePreset { .. } => 71,
@@ -83,6 +111,13 @@ impl Request {
             Self::SetParam { block, path, param, value } => set(*block, true, *path, *param, value),
             Self::SetExtra { block, path, index, value } => set(*block, false, *path, *index, value),
             Self::SetBlockEnabled { block, enabled } => map(vec![(98, int(*block)), (59, Value::Boolean(*enabled))]),
+            Self::InsertBlock { block, model, engine, cab } => {
+                let body = map(vec![(24, model_ref(*model, *cab)), (9, int(*engine)), (10, Value::Boolean(true))]);
+                map(vec![(98, int(*block)), (99, map(vec![(19, int(6)), (20, body)]))])
+            }
+            Self::ChangeModel { block, model, cab } => map(vec![(98, int(*block)), (100, model_ref(*model, *cab))]),
+            Self::RemoveBlock { block } => map(vec![(98, int(*block))]),
+            Self::WriteDocument { document } => map(vec![(110, raw_str(document))]),
             Self::SelectBlock { block, path } => map(vec![(98, int(*block)), (26, int(*path))]),
             Self::SelectSnapshot { index } => map(vec![(92, int(*index))]),
             Self::SavePreset { setlist, index, name } => {
@@ -100,6 +135,9 @@ impl Request {
     }
 
     pub fn encode(&self, txn: u64) -> Vec<u8> {
+        if let Self::WriteDocument { document } = self {
+            return encode_write(txn, document);
+        }
         let mut out = Vec::new();
         rmpv::encode::write_value(&mut out, &self.to_value(txn)).expect("writing to a Vec cannot fail");
         out
@@ -125,6 +163,21 @@ impl Request {
                     false => Self::SetExtra { block, path, index: at, value },
                 })
             }
+            39 => {
+                let slot = get(get(a, 99)?.as_map()?, 20)?.as_map()?.to_vec();
+                let (model, cab) = parse_model_ref(get(&slot, 24)?)?;
+                Some(Self::InsertBlock { block: u(98)?, model, engine: get(&slot, 9)?.as_u64()?, cab })
+            }
+            40 => {
+                let (model, cab) = parse_model_ref(get(a, 100)?)?;
+                Some(Self::ChangeModel { block: u(98)?, model, cab })
+            }
+            28 => Some(Self::RemoveBlock { block: u(98)? }),
+            21 => match get(a, 110)? {
+                Value::String(s) => Some(Self::WriteDocument { document: s.as_bytes().to_vec() }),
+                Value::Binary(b) => Some(Self::WriteDocument { document: b.clone() }),
+                _ => None,
+            },
             41 => Some(Self::SetBlockEnabled { block: u(98)?, enabled: get(a, 59)?.as_bool()? }),
             78 => Some(Self::SelectBlock { block: u(98)?, path: u(26)? }),
             88 => Some(Self::SelectSnapshot { index: u(92)? }),
@@ -143,5 +196,33 @@ impl Request {
         .filter(|r| r.args() == args)
         .unwrap_or(Self::Other { opcode, args });
         Some((txn, parsed))
+    }
+}
+
+/// Op 21 as HX Edit writes it: `{102: txn, 100: 21, 101: {110: document}}` with the document as a
+/// str, although it is not UTF-8, which rmpv would only write as bin.
+fn encode_write(txn: u64, document: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x83];
+    rmpv::encode::write_value(&mut out, &int(TXN)).expect("writing to a Vec cannot fail");
+    rmpv::encode::write_value(&mut out, &int(txn)).expect("writing to a Vec cannot fail");
+    out.extend([OPCODE as u8, 21, ARGS as u8, 0x81, 110]);
+    out.extend(str_head(document.len()));
+    out.extend_from_slice(document);
+    out
+}
+
+/// The document as rmpv reads it off the wire: a str that is not UTF-8. rmpv builds such a value
+/// only by reading it (and writes it as bin), so `encode_write` puts it on the wire instead.
+fn raw_str(document: &[u8]) -> Value {
+    let wire = encode_write(0, document);
+    let at = wire.len() - document.len() - str_head(document.len()).len();
+    rmpv::decode::read_value(&mut &wire[at..]).expect("a str written by encode_write")
+}
+
+fn str_head(len: usize) -> Vec<u8> {
+    match len {
+        n if n < 0x100 => vec![0xd9, n as u8],
+        n if n < 0x1_0000 => [vec![0xda], (n as u16).to_be_bytes().to_vec()].concat(),
+        n => [vec![0xdb], (n as u32).to_be_bytes().to_vec()].concat(),
     }
 }
