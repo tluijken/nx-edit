@@ -116,7 +116,14 @@ well; the document read afterwards has "TestShot" twice [seen].
 
 Moving a block (`11`) has no op of its own: HX Edit edits the document and writes the whole of it
 back with op 21 [seen]. Status 1 arrives while the 2.4 KB document is still being sent; notification
-20 for the transaction follows, then notification 21 (nil) [seen].
+20 for the transaction follows, then notification 21 (nil) [seen]. The document it writes is in HX
+Edit's own form, as with op 8 (see "A document as HX Edit writes it"): compared with the one the
+pedal returned after the reconnect in `12`, it has key 5's extra keys, 13-entry snapshot lists and
+nil slot-state flags, and the junctions' before-slot is 1 and 9 where the pedal stores 0 [seen].
+`Request::WriteDocument` encodes `11`'s document to the very bytes HX Edit sent. nx-edit moves a
+block by swapping two slots of the pedal's own document (`Document::swap_slots`, which also moves
+the snapshot slot states, controller assignments and cursor) and writing that back; whether the
+pedal accepts its own form there has not been tried.
 
 The trails switch of a delay (`12`) is op 30 with `29: false, 28: 0` on the delay's slot, value
 `true`/`false` [seen]. `28` is the parameter index in the model's order: turning the Cali
@@ -282,7 +289,7 @@ Layer 3. Revv DM's 20 slots are `input, 6 blocks, 2 empty, output, split, 6 empt
 | 2 | split | `{14: {5: route, 7: values}, 15: {8: model, 13: before-slot, 10: enabled, 7: values}, 18: true}` |
 | 3 | join | `{16: {6: route, 7: values}, 17: {8: model, 13: before-slot, 10: enabled, 7: values}, 18: true}` |
 | 6 | block | `{24: {23: amp+cab, 25: model, 26: cab model or -1}, 9: engine, 10: enabled, 11: values, 12: the cab's values}` |
-| 7 | looper | `{8: model, 9: 22, 10: enabled, 7: values}` [seen, `31`; `nx-proto` does not decode it yet] |
+| 7 | looper | `{8: model, 9: 22, 10: enabled, 7: values}` [seen, `31`]; `nx-proto` reads it as a block |
 | 8 | empty | nil |
 
 - **values** are `{2: count, 3: params, 4: [...]}`, floats in the model's own units (Drive 0.45,
@@ -573,6 +580,8 @@ retried.
 ## Open questions
 
 - Whether the device checks the section table of a document written with op 21 or op 8.
+- Whether op 21 takes the pedal's own document form, or only HX Edit's; the safe first try is
+  writing back the unchanged document the pedal just returned.
 - The engine of returns, FX loops, legacy cabs (`cab.models`) and gates; see "A document as HX Edit
   writes it". Op 33 `{102: 5}`, which HX Edit sends after an Amp+Cab or looper model change, and
   notifications 31 `{98, 70, 79}` and 34 that come with it (`31`).

@@ -24,6 +24,9 @@ Windows 11 VM.
   reverb's trails, switches blocks on and off and changes snapshots on the pedal. It follows edits
   made on the pedal itself, and undo and redo work for knob turns. Save (Ctrl+S) stores the edits in
   the preset's own place on the pedal, and nx-edit asks before a preset switch would drop them.
+- Edits the pedal's chain on path A: click an empty slot and pick a model to add a block, pick a
+  model with a block selected to change it, remove a block from its context menu, or drag it to
+  another position.
 - Lists the pedal's presets and follows preset switches.
 - Keeps a library of `.hlx` files beside the pedal's list. You can drop files in, rename them and
   move them to the trash. Library presets can be edited offline and saved (Ctrl+S); nx-edit asks
