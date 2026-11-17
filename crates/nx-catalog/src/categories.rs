@@ -9,6 +9,8 @@ use crate::CatalogError;
 pub struct Category {
     pub id: u32,
     pub name: String,
+    /// HX Edit's short name (Dist, Verb), for where the name does not fit.
+    pub short_name: String,
     pub color: u32,
     /// Models of the category and all its subcategories, in HX Edit's order.
     pub model_ids: Vec<String>,
@@ -31,6 +33,8 @@ struct RawCatalog {
 struct RawCategory {
     id: u32,
     name: String,
+    #[serde(default, rename = "shortName")]
+    short_name: String,
     #[serde(default)]
     color: String,
     #[serde(default)]
@@ -76,6 +80,7 @@ pub(crate) fn read_categories(path: &Path) -> Result<Vec<Category>, CatalogError
                     model_ids: s.models.iter().map(|m| m.id.clone()).collect(),
                 })
                 .collect(),
+            short_name: if c.short_name.is_empty() { c.name.clone() } else { c.short_name },
             name: c.name,
         })
         .collect())

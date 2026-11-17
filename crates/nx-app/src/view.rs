@@ -524,18 +524,39 @@ impl EditorApp {
                 let grid = Grid { origin: area.min, column, columns };
                 clicked = self.paint_chain(ui, &grid, lanes, branch, rejoins, &empties);
             });
-            match clicked {
-                Some(ChainClick::Select(key)) => {
-                    self.selected_block = Some(key);
-                    self.selected_empty = None;
-                }
-                Some(ChainClick::Toggle(key)) => self.toggle_block(&key),
-                Some(ChainClick::Empty(position)) => self.select_empty(position),
-                Some(ChainClick::Remove(key)) => self.remove_block(&key),
-                Some(ChainClick::Move(key, position)) => self.move_block(&key, position),
-                None => {}
+            if let Some(click) = clicked {
+                self.chain_click(click);
             }
         });
+    }
+
+    fn chain_click(&mut self, click: ChainClick) {
+        match click {
+            ChainClick::Select(key) => {
+                self.selected_block = Some(key);
+                self.selected_empty = None;
+            }
+            ChainClick::Toggle(key) => self.toggle_block(&key),
+            ChainClick::Empty(position) => self.select_empty(position),
+            ChainClick::Remove(key) => self.remove_block(&key),
+            ChainClick::Move(key, position) => self.move_block(&key, position),
+            ChainClick::ChangeModel(key) => self.change_model_of(key),
+        }
+    }
+
+    /// Opens the models list on the category of a block's model, to pick another for it.
+    fn change_model_of(&mut self, key: String) {
+        let model = self.preset.as_ref().and_then(|p| p.blocks().into_iter().find(|b| b.key == key)).map(|b| b.model);
+        if let (Some(model), Some(catalog)) = (model, &self.catalog)
+            && let Some(i) = catalog.categories().iter().position(|c| c.model_ids.contains(&model))
+        {
+            self.selected_category = i;
+        }
+        self.selected_block = Some(key);
+        self.selected_empty = None;
+        self.search.clear();
+        self.panel = Panel::Models;
+        self.focus_search = true;
     }
 
     fn paint_chain(&self, ui: &Ui, grid: &Grid, lanes: &[Lane], branch: Option<Branch>, rejoins: bool, empties: &[u8]) -> Option<ChainClick> {
@@ -595,6 +616,12 @@ impl EditorApp {
                 let sense = if movable { Sense::click_and_drag() } else { Sense::click() };
                 let response = ui.interact(rect, ui.scope_id().with(("block", &tile.block_key)), sense);
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &tile.label));
+                let response = if movable {
+                    let cursor = if response.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab };
+                    response.on_hover_cursor(cursor).on_hover_text("Click to edit, drag to move, right-click for more")
+                } else {
+                    response
+                };
                 if response.clicked() {
                     clicked = Some(ChainClick::Select(tile.block_key.clone()));
                 }
@@ -612,6 +639,10 @@ impl EditorApp {
                 }
                 if self.live().is_some() {
                     response.context_menu(|ui| {
+                        if ui.button("Change model…").clicked() {
+                            clicked = Some(ChainClick::ChangeModel(tile.block_key.clone()));
+                            ui.close();
+                        }
                         if ui.button(format!("Remove {}", tile.label)).clicked() {
                             clicked = Some(ChainClick::Remove(tile.block_key.clone()));
                             ui.close();
@@ -666,6 +697,8 @@ impl EditorApp {
         let power = power_center(rect);
         if let Some(category) = &tile.category {
             let room = power.x - 16.0 - (head.x + 14.0);
+            let full = painter.layout_no_wrap(category.clone(), theme::semibold(11.0), theme::TEXT_DIM).size().x;
+            let category = if full > room { tile.category_short.as_ref().unwrap_or(category) } else { category };
             let galley = one_line(painter, category, theme::semibold(11.0), theme::TEXT_DIM, room);
             painter.galley(head + vec2(14.0, -galley.size().y / 2.0), galley, theme::TEXT_DIM);
         }
@@ -685,9 +718,9 @@ impl EditorApp {
         {
             card(ui, |ui| {
                 ui.label(RichText::new("Empty slot").font(theme::semibold(22.0)));
-                ui.label(RichText::new(format!("Path A · slot {}", slot_of(0, position))).font(theme::regular(13.0)).color(theme::TEXT_DIM));
+                ui.label(RichText::new(format!("Path A · slot {}", position + 1)).font(theme::regular(13.0)).color(theme::TEXT_DIM));
                 ui.add_space(8.0);
-                ui.label(RichText::new("Pick a model in Models to put it here.").font(theme::regular(14.0)).color(theme::TEXT_MID));
+                ui.label(RichText::new("Pick a model in Models to put it here, or drag a block of the chain onto it.").font(theme::regular(14.0)).color(theme::TEXT_MID));
             });
             return;
         }
@@ -701,6 +734,7 @@ impl EditorApp {
         let can_toggle = address.is_some() || file;
         let mut toggle = false;
         let mut turned = None;
+        let mut chain = None;
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
@@ -714,10 +748,7 @@ impl EditorApp {
                     ui.label(RichText::new(title).font(theme::semibold(22.0)));
                     let category = tile.as_ref().and_then(|t| t.category.clone()).unwrap_or_else(|| "Block".to_owned());
                     let path = if block.path == 0 { "A" } else { "B" };
-                    let mut sub = format!("{category} · Path {path}");
-                    if let Some(address) = &address {
-                        sub.push_str(&format!(" · slot {}", address.slot));
-                    }
+                    let sub = format!("{category} · Path {path} · slot {}", block.position + 1);
                     ui.label(RichText::new(sub).font(theme::regular(13.0)).color(theme::TEXT_DIM));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -737,6 +768,35 @@ impl EditorApp {
                         toggle = true;
                     }
                 });
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let button = |text: &str| egui::Button::new(RichText::new(text).font(theme::semibold(12.0))).corner_radius(CornerRadius::same(255)).min_size(vec2(0.0, 28.0));
+                if address.is_some() {
+                    if ui.add(button("Change model…")).on_hover_text("Pick another model in Models").clicked() {
+                        chain = Some(ChainClick::ChangeModel(key.clone()));
+                    }
+                    if block.path == 0 {
+                        let left = block.position.checked_sub(1);
+                        let right = Some(block.position + 1).filter(|p| *p < PATH_POSITIONS);
+                        if ui.add_enabled(left.is_some(), button("◀ Move")).on_hover_text("Trade places with the slot to the left").clicked() {
+                            chain = left.map(|p| ChainClick::Move(key.clone(), p));
+                        }
+                        if ui.add_enabled(right.is_some(), button("Move ▶")).on_hover_text("Trade places with the slot to the right").clicked() {
+                            chain = right.map(|p| ChainClick::Move(key.clone(), p));
+                        }
+                    }
+                    if ui.add(button("Remove")).on_hover_text("Take the block out of the chain (Delete)").clicked() {
+                        chain = Some(ChainClick::Remove(key.clone()));
+                    }
+                    if block.path == 1 {
+                        ui.label(RichText::new("Moving path B blocks is not supported yet.").font(theme::regular(12.0)).color(theme::TEXT_DIM));
+                    }
+                } else if file {
+                    let why = "Turn knobs and switch blocks here; adding, moving and removing blocks works on the pedal's preset.";
+                    ui.label(RichText::new(why).font(theme::regular(12.0)).color(theme::TEXT_DIM));
+                }
             });
             ui.add_space(8.0);
             let per_row = (((ui.available_width() + GAP) / (KNOB_CARD.x + GAP)).floor() as usize).max(1);
@@ -796,6 +856,9 @@ impl EditorApp {
         });
         if toggle {
             self.toggle_block(&key);
+        }
+        if let Some(click) = chain {
+            self.chain_click(click);
         }
         let Some((name, value)) = turned else { return };
         self.set_param(&key, &name, value);
@@ -928,6 +991,12 @@ impl EditorApp {
             egui::Key::Num8,
             egui::Key::Num9,
         ];
+        if ctx.input(|i| i.key_pressed(egui::Key::Delete))
+            && let Some(key) = self.selected_block.clone()
+            && self.live().is_some_and(|c| c.addresses.contains_key(&key))
+        {
+            self.remove_block(&key);
+        }
         let count = self.preset.as_ref().map_or(0, |p| p.snapshot_names().len());
         if let Some(index) = ctx.input(|i| if i.modifiers.alt { NUMBERS.iter().position(|k| i.key_pressed(*k)) } else { None }).filter(|i| *i < count) {
             self.select_snapshot(index);
@@ -1813,6 +1882,7 @@ enum ChainClick {
     Remove(String),
     /// A block dragged to a position of path A.
     Move(String, u8),
+    ChangeModel(String),
 }
 
 /// The centre of a block tile's power icon.
@@ -3017,6 +3087,32 @@ mod pedal_tests {
         harness.state_mut().preset_filter = "03a".into();
         harness.run();
         harness.get_by_label("03A NX Test, edited");
+    }
+
+    #[test]
+    fn the_block_editor_moves_and_removes_the_block_and_delete_removes_it_too() {
+        let Some((mut app, device)) = chain_app() else { return };
+        app.selected_block = Some("block0".into());
+        let mut harness = harness_on(app);
+        harness.get_by_label("◀ Move").click();
+        harness.run();
+        sent_once(&device, |r| matches!(r, Request::WriteDocument { .. }), 1);
+        harness.state_mut().selected_block = Some("block1".into());
+        harness.run();
+        harness.key_press(egui::Key::Delete);
+        harness.run();
+        assert_eq!(sent_once(&device, chain_edit, 1), [Request::RemoveBlock { block: 3 }]);
+    }
+
+    #[test]
+    fn change_model_opens_the_models_on_the_blocks_category() {
+        let Some((mut app, _device)) = chain_app() else { return };
+        app.selected_block = Some("block0".into());
+        let mut harness = harness_on(app);
+        harness.get_by_label("Change model…").click();
+        harness.run();
+        assert_eq!(harness.state().panel, Panel::Models);
+        harness.get_by_label("Category: Amp");
     }
 
     #[test]

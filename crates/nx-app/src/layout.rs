@@ -18,6 +18,7 @@ pub struct Tile {
     pub label: String,
     /// HX Edit's category of the model (Amp, Cab, Delay, ...), when the catalog knows it.
     pub category: Option<String>,
+    pub category_short: Option<String>,
     pub category_color: Option<u32>,
     pub enabled: bool,
 }
@@ -32,6 +33,7 @@ pub fn lanes(preset: &Preset, catalog: Option<&Catalog>) -> Vec<Lane> {
                 .and_then(|m| m.name.clone())
                 .unwrap_or_else(|| block.model.clone()),
             category: category.map(|c| c.name.clone()),
+            category_short: category.map(|c| c.short_name.clone()),
             category_color: category.map(|c| c.color),
             enabled: block.enabled,
             position: block.position,

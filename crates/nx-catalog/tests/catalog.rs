@@ -31,8 +31,9 @@ fn missing_optional_keys_are_none() {
 fn categories_flatten_subcategories() {
     let catalog = Catalog::load(&fixture_dir()).unwrap();
     let dist = &catalog.categories()[1];
-    assert_eq!(dist.name, "Distortion");
+    assert_eq!((dist.name.as_str(), dist.short_name.as_str()), ("Distortion", "Dist"));
     assert_eq!(dist.color, 0xf5901e);
+    assert_eq!(catalog.categories()[0].short_name, "None", "without a short name, the name");
     assert!(dist.model_ids.iter().any(|id| id == "HD2_DistKinkyBoost"));
     assert_eq!(catalog.categories()[0].model_ids, vec!["None"]);
 }

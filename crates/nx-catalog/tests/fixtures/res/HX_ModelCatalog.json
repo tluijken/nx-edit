@@ -9,6 +9,7 @@
     {
       "id": 1,
       "name": "Distortion",
+      "shortName": "Dist",
       "color": "0xf5901e",
       "subcategories": [
         {
