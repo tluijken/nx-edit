@@ -3,6 +3,9 @@ name = "nx-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Editor for the Line 6 HX Stomp"
+homepage = "https://github.com/tluijken/nx-edit"
+repository = "https://github.com/tluijken/nx-edit"
 
 [[bin]]
 name = "nx-edit"
@@ -29,3 +32,54 @@ windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["eframe"] }
 nx-session = { path = "../nx-session", features = ["fake"] }
+
+[package.metadata.deb]
+name = "nx-edit"
+maintainer = "Thomas Luijken <github@luijken.dev>"
+copyright = "Thomas Luijken"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+A native editor for the Line 6 HX Stomp. It speaks the pedal's USB protocol directly. \
+Block and parameter names are imported once from the user's own HX Edit installer."""
+section = "sound"
+priority = "optional"
+# eframe dlopens the windowing and GL libraries, so $auto cannot see them.
+depends = "$auto, libxkbcommon0, libwayland-client0, libwayland-egl1, libegl1, libgl1"
+recommends = "libvulkan1, libx11-6, libxcursor1, libxrandr2, libxi6, libxkbcommon-x11-0, p7zip-full | 7zip"
+assets = [
+    ["target/release/nx-edit", "usr/bin/", "755"],
+    ["../../packaging/70-nx-edit.rules", "usr/lib/udev/rules.d/", "644"],
+    ["../../packaging/io.github.tluijken.NxEdit.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/io.github.tluijken.NxEdit.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../../assets/nx-edit.svg", "usr/share/icons/hicolor/scalable/apps/io.github.tluijken.NxEdit.svg", "644"],
+    ["../../README.md", "usr/share/doc/nx-edit/", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "nx-edit"
+assets = [
+    { source = "target/release/nx-edit", dest = "/usr/bin/nx-edit", mode = "755" },
+    { source = "../../packaging/70-nx-edit.rules", dest = "/usr/lib/udev/rules.d/70-nx-edit.rules", mode = "644" },
+    { source = "../../packaging/io.github.tluijken.NxEdit.desktop", dest = "/usr/share/applications/io.github.tluijken.NxEdit.desktop", mode = "644" },
+    { source = "../../packaging/io.github.tluijken.NxEdit.metainfo.xml", dest = "/usr/share/metainfo/io.github.tluijken.NxEdit.metainfo.xml", mode = "644" },
+    { source = "../../assets/nx-edit.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.tluijken.NxEdit.svg", mode = "644" },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/nx-edit/LICENSE", mode = "644", doc = true },
+    { source = "../../README.md", dest = "/usr/share/doc/nx-edit/README.md", mode = "644", doc = true },
+]
+
+# eframe dlopens these, so the automatic requirements miss them.
+[package.metadata.generate-rpm.requires]
+"libxkbcommon.so.0()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libwayland-egl.so.1()(64bit)" = "*"
+"libEGL.so.1()(64bit)" = "*"
+"libGL.so.1()(64bit)" = "*"
+
+[package.metadata.generate-rpm.recommends]
+"libvulkan.so.1()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXrandr.so.2()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"/usr/bin/7z" = "*"

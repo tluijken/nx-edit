@@ -37,19 +37,38 @@ jobs:
         shell: bash
         run: |
           dir=nx-edit-${{ github.ref_name }}-${{ matrix.name }}
-          mkdir "$dir"
+          mkdir "$dir" dist
           cp target/${{ matrix.target }}/release/${{ matrix.exe }} LICENSE README.md "$dir"/
-          if [ "${{ matrix.os }}" = windows-latest ]; then
-            7z a "$dir.zip" "$dir" > /dev/null
-            echo "ASSET=$dir.zip" >> "$GITHUB_ENV"
-          else
-            tar czf "$dir.tar.gz" "$dir"
-            echo "ASSET=$dir.tar.gz" >> "$GITHUB_ENV"
+          if [ "${{ matrix.os }}" = ubuntu-22.04 ]; then
+            cp packaging/70-nx-edit.rules packaging/io.github.tluijken.NxEdit.desktop \
+              packaging/io.github.tluijken.NxEdit.metainfo.xml "$dir"/
+            cp assets/nx-edit.svg "$dir"/io.github.tluijken.NxEdit.svg
           fi
+          if [ "${{ matrix.os }}" = windows-latest ]; then
+            7z a "dist/$dir.zip" "$dir" > /dev/null
+          else
+            tar czf "dist/$dir.tar.gz" "$dir"
+          fi
+      - uses: taiki-e/install-action@v2
+        if: matrix.os == 'ubuntu-22.04'
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - name: Linux packages
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          strip target/${{ matrix.target }}/release/nx-edit
+          cargo deb -p nx-app --no-build --target ${{ matrix.target }} --output dist/
+          cargo generate-rpm -p crates/nx-app --target ${{ matrix.target }} --output dist/
+      - name: Vendored sources
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          cargo vendor --locked vendor > /dev/null
+          tar cJf "dist/nx-edit-$version-vendor.tar.xz" vendor
       - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.name }}
-          path: ${{ env.ASSET }}
+          path: dist/*
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
