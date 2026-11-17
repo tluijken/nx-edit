@@ -21,8 +21,8 @@ use crate::device::{DevicePreset, Param, preset_from_session};
 
 /// Notifications after which the pedal's preset differs from what was read, so it is read again:
 /// preset switched (4) [seen, 02], snapshot loaded (46) [seen, 05], a block changed: enabled,
-/// model (49) [seen, 04, live-05].
-const READ_AGAIN: [u64; 3] = [4, 46, 49];
+/// model (49) [seen, 04, live-05], a document written with op 21 (21) [seen, 11].
+const READ_AGAIN: [u64; 4] = [4, 46, 49, 21];
 /// A preset switch is under way (8), before 4 [seen, 02]; addresses are stale from here on.
 const SWITCHING: u64 = 8;
 /// A parameter changed, by nx-edit or on the pedal: `{106: {98, 29, 26, 28, 119}}` like op 30 [seen,
@@ -136,6 +136,12 @@ impl Live {
     /// Empties `slot` (op 28).
     pub fn remove(&self, generation: u64, slot: u64) {
         self.send(Command::Chain { generation, request: Request::RemoveBlock { block: slot } });
+    }
+
+    /// Replaces the preset of `generation` on the pedal with `document` (op 21), as HX Edit does to
+    /// move a block. The pedal confirms with notifications 20 and 21, and the preset is read again.
+    pub fn write_document(&self, generation: u64, document: Vec<u8>) {
+        self.send(Command::Chain { generation, request: Request::WriteDocument { document } });
     }
 
     /// Stores the pedal's edits at a place under `name` (op 71), reported as [`Update::Saved`].
@@ -726,5 +732,26 @@ mod tests {
         live.remove(0, 2);
         drop(live);
         assert!(sent(&device).iter().all(|r| !matches!(r, Request::InsertBlock { .. } | Request::RemoveBlock { .. })));
+    }
+
+    #[test]
+    fn a_rewritten_document_goes_out_as_op_21_and_is_read_again_once_written() {
+        let device = pedal(NAMES);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        live.write_document(0, b"moved".to_vec());
+        wait_until("op 21 not sent", || sent(&device).contains(&Request::WriteDocument { document: b"moved".to_vec() }));
+        device.notify(21, Value::Nil);
+        assert_eq!(wait_for_load(&live).preset.name, "Mark Lead");
+    }
+
+    #[test]
+    fn a_document_meant_for_an_older_preset_is_not_written() {
+        let device = pedal(NAMES);
+        let live = Live::start(Session::connect(device.transport()).unwrap());
+        switched_to(&device, 3);
+        wait_for_load(&live);
+        live.write_document(0, b"stale".to_vec());
+        drop(live);
+        assert!(sent(&device).iter().all(|r| !matches!(r, Request::WriteDocument { .. })));
     }
 }
