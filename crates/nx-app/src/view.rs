@@ -1810,6 +1810,8 @@ impl EditorApp {
         let placed = self.select_after_load.take().and_then(|(path, position)| hlx.blocks().into_iter().find(|b| b.path == path && b.position == position));
         let still_empty = same_preset && self.selected_empty.is_some_and(|p| empty_positions(&hlx).contains(&p));
         if let Some(block) = placed {
+            let name = self.catalog.as_ref().and_then(|c| c.model(&block.model)).and_then(|m| m.name.clone()).unwrap_or_else(|| block.model.clone());
+            self.notices.info(format!("{name} is in slot {}", block.position + 1));
             self.selected_block = Some(block.key);
             self.selected_empty = None;
         } else if still_empty {
