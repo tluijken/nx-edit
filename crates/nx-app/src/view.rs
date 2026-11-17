@@ -8,6 +8,7 @@ use egui::{Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, Ric
 use nx_catalog::Catalog;
 use nx_hlx::Preset;
 
+use crate::connect::{Connect, Connector, Linked};
 use crate::device::BlockAddress;
 use crate::history::{History, Turn};
 use crate::layout::{
@@ -15,6 +16,7 @@ use crate::layout::{
     slot_of, typed_value, wire_value,
 };
 use crate::live::{Live, Loaded, ParamChange, Update};
+use crate::notice::Notices;
 use crate::theme;
 
 const GAP: f32 = 10.0;
@@ -72,8 +74,12 @@ pub struct EditorApp {
     catalog: Option<Catalog>,
     selected_block: Option<String>,
     selected_category: usize,
-    status: String,
+    notices: Notices,
     connection: Option<Connection>,
+    /// Looks for the pedal while there is no connection; none when nx-edit shows a capture.
+    connector: Option<Connector>,
+    /// The connection that was lost, while there is no new one.
+    lost: Option<Lost>,
     drag: Option<Drag>,
     panel: Panel,
     search: String,
@@ -106,6 +112,13 @@ pub struct EditorApp {
     assigning: Option<crate::assign::Assign>,
 }
 
+/// What the pedal held when the connection to it was lost.
+struct Lost {
+    place: Option<u64>,
+    name: String,
+    unsaved: bool,
+}
+
 /// Leaving a library file with unsaved edits, for another file, the pedal's preset, another
 /// preset on the pedal, or quitting.
 #[derive(Clone)]
@@ -124,13 +137,19 @@ impl EditorApp {
             (None, None) => Panel::Library,
             (None, Some(_)) => Panel::Snapshots,
         };
+        let mut notices = Notices::default();
+        if !status.is_empty() {
+            notices.info(status);
+        }
         Self {
             preset,
             catalog,
             selected_block,
             selected_category: 1,
-            status,
+            notices,
             connection,
+            connector: None,
+            lost: None,
             drag: None,
             panel,
             search: String::new(),
@@ -151,8 +170,13 @@ impl EditorApp {
         }
     }
 
+    /// Looks for the pedal with `connect`, now and again whenever there is no connection.
+    pub fn connect_with(&mut self, connect: Connect) {
+        self.connector = Some(Connector::new(connect));
+    }
+
     /// Draws the top bar; true when its Save button was clicked.
-    fn top_bar(&self, ui: &mut Ui) -> bool {
+    fn top_bar(&mut self, ui: &mut Ui) -> bool {
         let mut save = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
@@ -192,13 +216,172 @@ impl EditorApp {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                pill(ui, |ui| {
-                    dot(ui, if self.connection.is_some() { theme::GREEN } else { theme::ARM_OFF }, 8.0);
-                    ui.label(RichText::new(&self.status).font(theme::regular(12.0)).color(theme::TEXT_DIM));
-                });
+                if self.connection_pill(ui)
+                    && let Some(connector) = self.connector.as_mut()
+                {
+                    connector.retry_now();
+                }
+                self.notice_pill(ui);
             });
         });
         save
+    }
+
+    /// Whether nx-edit is connected to the pedal, looking for it, or why it is not; true when
+    /// clicked to look now.
+    fn connection_pill(&self, ui: &mut Ui) -> bool {
+        let running = self.connection.as_ref().is_some_and(|c| c.live.running());
+        let connector = self.connector.as_ref();
+        let (color, text, hint) = if running {
+            (theme::GREEN, "HX Stomp connected".to_owned(), None)
+        } else if connector.is_some_and(Connector::trying) {
+            (theme::ORANGE, "Looking for the HX Stomp…".to_owned(), None)
+        } else if let Some(connector) = connector {
+            (theme::ARM_OFF, "Not connected · Connect".to_owned(), connector.failure.clone())
+        } else {
+            (theme::ARM_OFF, "Not connected".to_owned(), None)
+        };
+        let clickable = !running && connector.is_some();
+        let response = pill(ui, |ui| {
+            dot(ui, color, 8.0);
+            ui.label(RichText::new(&text).font(theme::regular(12.0)).color(theme::TEXT_MID));
+        });
+        let response = if clickable { response.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
+        response.widget_info(|| egui::WidgetInfo::labeled(if clickable { egui::Role::Button } else { egui::Role::Label }, true, &text));
+        let hint = hint.unwrap_or_else(|| if clickable { "Look for the HX Stomp now".to_owned() } else { String::new() });
+        let response = if hint.is_empty() { response } else { response.on_hover_text(hint) };
+        clickable && response.clicked()
+    }
+
+    /// The latest message, in the error colour for an error, which stays until its × is clicked;
+    /// a click on the message lists the recent ones.
+    fn notice_pill(&mut self, ui: &mut Ui) {
+        let Some(notice) = self.notices.current(std::time::Instant::now()).cloned() else { return };
+        let mut dismiss = false;
+        let response = pill(ui, |ui| {
+            if notice.error {
+                let close = ui.add(egui::Button::new(RichText::new("×").font(theme::semibold(14.0)).color(theme::TEXT_DIM)).frame(false));
+                if close.on_hover_text("Dismiss").clicked() {
+                    dismiss = true;
+                }
+            }
+            let color = if notice.error { theme::ORANGE } else { theme::TEXT_DIM };
+            ui.add(egui::Label::new(RichText::new(&notice.text).font(theme::regular(12.0)).color(color)).truncate());
+        });
+        let response = response.interact(Sense::click()).on_hover_text("Recent messages");
+        if dismiss {
+            self.notices.dismiss();
+        }
+        let frame = Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(12)).stroke(Stroke::new(1.0, theme::RAISED_HI)).inner_margin(Margin::same(10));
+        egui::Popup::menu(&response).align(egui::RectAlign::BOTTOM_END).width(420.0).gap(4.0).frame(frame).show(|ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            let now = std::time::Instant::now();
+            for notice in self.notices.recent() {
+                let ago = now.duration_since(notice.at).as_secs();
+                let when = if ago < 60 { format!("{ago} s ago") } else { format!("{} min ago", ago / 60) };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(when).font(mono(11.0)).color(theme::TEXT_DIM));
+                    let color = if notice.error { theme::ORANGE } else { theme::TEXT_MID };
+                    ui.label(RichText::new(&notice.text).font(theme::regular(13.0)).color(color));
+                });
+            }
+        });
+    }
+
+    /// Follows the connection: errors the pedal reported, a connection that stopped, and a new one
+    /// the connector found.
+    fn watch_connection(&mut self) {
+        if let Some(connection) = &self.connection {
+            let errors = connection.live.errors();
+            let stopped = !connection.live.running();
+            for error in errors {
+                self.notices.error(format!("HX Stomp: {error}"));
+            }
+            if stopped {
+                self.lose_connection();
+            }
+        }
+        if self.connection.is_none()
+            && let Some(linked) = self.connector.as_mut().and_then(|c| c.poll(std::time::Instant::now()))
+        {
+            self.apply_link(linked);
+        }
+    }
+
+    /// The pedal went away: what it showed stays, read-only, until it is back.
+    fn lose_connection(&mut self) {
+        let Some(connection) = self.connection.take() else { return };
+        let name = connection.presets.iter().find(|p| Some(p.index) == connection.current).map(|p| p.name.clone()).unwrap_or_default();
+        self.lost = Some(Lost { place: connection.current, name, unsaved: self.pedal_unsaved });
+        self.pedal_unsaved = false;
+        self.pedal_preset = None;
+        self.selected_empty = None;
+        self.select_after_load = None;
+        if self.panel == Panel::Presets {
+            self.panel = Panel::Library;
+        }
+        self.notices.error("The HX Stomp was disconnected");
+        if let Some(connector) = self.connector.as_mut() {
+            connector.retry_now();
+        }
+    }
+
+    /// A connection the connector made: the pedal's preset is shown, unless a library file is.
+    fn apply_link(&mut self, linked: Linked) {
+        let Linked { connection, preset, modified, notes } = linked;
+        let place = connection.current.map(|i| format!(" · {} {}", nx_proto::slot_label(i), preset.name())).unwrap_or_default();
+        self.connection = Some(connection);
+        self.pedal_unsaved = modified;
+        self.lost = None;
+        self.notices.info(format!("Connected to the HX Stomp{place}"));
+        for note in notes {
+            self.notices.error(note);
+        }
+        if self.showing_file.is_some() {
+            self.pedal_preset = Some(preset);
+            return;
+        }
+        self.selected_block = preset.blocks().first().map(|b| b.key.clone());
+        self.selected_empty = None;
+        self.history.clear();
+        self.preset = Some(preset);
+        if self.panel == Panel::Library {
+            self.panel = Panel::Presets;
+        }
+    }
+
+    /// Says the pedal is gone and what that means for the edits it had.
+    fn lost_banner(&mut self, ui: &mut Ui) {
+        let Some(lost) = &self.lost else { return };
+        let place = lost.place.map(|i| format!("{} {}", nx_proto::slot_label(i), lost.name)).unwrap_or_else(|| "The preset".to_owned());
+        let mut detail = if self.showing_file.is_none() && self.preset.is_some() {
+            "What is shown is how it was; it can be edited again once the pedal is back.".to_owned()
+        } else {
+            String::new()
+        };
+        if lost.unsaved {
+            detail = format!("{place} had edits it had not saved; they stay in its edit buffer while it stays switched on. {detail}");
+        }
+        let mut reconnect = false;
+        Frame::new().fill(theme::with_alpha(theme::ORANGE, 0x22)).corner_radius(CornerRadius::same(CARD_RADIUS)).inner_margin(Margin::same(14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("The HX Stomp is disconnected").font(theme::semibold(15.0)).color(theme::ORANGE));
+                    if !detail.is_empty() {
+                        ui.label(RichText::new(detail.trim()).font(theme::regular(13.0)).color(theme::TEXT_MID));
+                    }
+                });
+                if self.connector.is_some() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        reconnect = ui.add(egui::Button::new(RichText::new("Reconnect").font(theme::semibold(13.0))).corner_radius(CornerRadius::same(255)).min_size(vec2(100.0, 34.0))).clicked();
+                    });
+                }
+            });
+        });
+        if reconnect && let Some(connector) = self.connector.as_mut() {
+            connector.retry_now();
+        }
     }
 
     fn rail(&mut self, ui: &mut Ui) {
@@ -536,7 +719,7 @@ impl EditorApp {
         let Some(connection) = self.live() else { return };
         let name = self.catalog.as_ref().and_then(|c| c.model(id)).and_then(|m| m.name.clone()).unwrap_or_else(|| id.to_owned());
         let Some(model) = connection.syms.number_for(id, stereo) else {
-            self.status = format!("{name} is not in HX Edit's model numbering");
+            self.notices.error(format!("{name} is not in HX Edit's model numbering"));
             return;
         };
         let generation = connection.generation;
@@ -544,15 +727,15 @@ impl EditorApp {
             let category = self.catalog.as_ref().and_then(|c| c.model(id)).and_then(|m| m.category);
             let symbol = connection.syms.get(model).map_or(id, |s| s.symbol.as_str());
             let Some(engine) = nx_catalog::engine(category, symbol) else {
-                self.status = format!("What the pedal needs to add {name} is not known yet");
+                self.notices.error(format!("What the pedal needs to add {name} is not known yet"));
                 return;
             };
             connection.live.insert(generation, slot_of(0, position), model, engine);
             self.select_after_load = Some((0, position));
-            self.status = format!("Adding {name}…");
+            self.notices.info(format!("Adding {name}…"));
         } else if let Some(address) = self.selected_block.as_ref().and_then(|key| connection.addresses.get(key)) {
             connection.live.change_model(generation, address.slot, model);
-            self.status = format!("Changing to {name}…");
+            self.notices.info(format!("Changing to {name}…"));
         } else {
             return;
         }
@@ -568,7 +751,7 @@ impl EditorApp {
             self.selected_block = None;
         }
         self.pedal_unsaved = true;
-        self.status = "Removing the block…".to_owned();
+        self.notices.info("Removing the block…");
     }
 
     /// Moves a block of path A to `position`, trading places with what is there, by writing the
@@ -589,9 +772,9 @@ impl EditorApp {
                 connection.live.write_document(connection.generation, document);
                 self.select_after_load = Some((0, position));
                 self.pedal_unsaved = true;
-                self.status = "Moving the block…".to_owned();
+                self.notices.info("Moving the block…");
             }
-            Err(e) => self.status = format!("Cannot move the block: {e}"),
+            Err(e) => self.notices.error(format!("Cannot move the block: {e}")),
         }
     }
 
@@ -703,7 +886,7 @@ impl EditorApp {
         connection.live.select(0, index);
         // Knobs stay read-only until the pedal reports the new preset and it is shown.
         connection.addresses.clear();
-        self.status = format!("Switching to {}…", nx_proto::slot_label(index));
+        self.notices.info(format!("Switching to {}…", nx_proto::slot_label(index)));
     }
 
     /// Goes elsewhere, first asking what to do with unsaved edits to the library file shown, or to
@@ -761,28 +944,28 @@ impl EditorApp {
     }
 
     /// Has the pedal store its edits at the preset's own place under its own name, as HX Edit's
-    /// Save does; the status says when the pedal has done so. Commands to the pedal run in order,
+    /// Save does; a message says when the pedal has done so. Commands to the pedal run in order,
     /// so a switch asked for after this happens after the save.
     fn save_to_pedal(&mut self) -> bool {
         let Some(connection) = self.live() else { return false };
         let (Some(index), Some(preset)) = (connection.current, &self.preset) else { return false };
         connection.live.save(0, index, preset.name());
-        self.status = format!("Saving to {}…", nx_proto::slot_label(index));
+        self.notices.info(format!("Saving to {}…", nx_proto::slot_label(index)));
         true
     }
 
-    /// Writes the library file shown; false, with the reason in the status, when that failed.
+    /// Writes the library file shown; false, with the reason in a message, when that failed.
     fn save_file(&mut self) -> bool {
         let (Some(path), Some(preset)) = (&self.showing_file, &self.preset) else { return false };
         match crate::library::save(path, preset) {
             Ok(()) => {
-                self.status = format!("Saved {}", preset.name());
+                self.notices.info(format!("Saved {}", preset.name()));
                 self.unsaved = false;
                 self.rescan();
                 true
             }
             Err(e) => {
-                self.status = format!("Not saved: {e}");
+                self.notices.error(format!("Not saved: {e}"));
                 false
             }
         }
@@ -854,7 +1037,7 @@ impl EditorApp {
         match built {
             Ok(document) => {
                 connection.live.assign(0, place, &assign.name, document);
-                self.status = format!("Sending \"{}\" to {}", assign.name, nx_proto::slot_label(place));
+                self.notices.info(format!("Sending \"{}\" to {}", assign.name, nx_proto::slot_label(place)));
                 self.assigning = None;
             }
             Err(e) => assign.error = Some(format!("Cannot send this preset: {e}")),
@@ -869,7 +1052,7 @@ impl EditorApp {
             connection.presets = presets;
         }
         let name = connection.presets.iter().find(|p| p.index == index).map(|p| p.name.clone()).unwrap_or_default();
-        self.status = format!("\"{name}\" is on {}", nx_proto::slot_label(index));
+        self.notices.info(format!("\"{name}\" is on {}", nx_proto::slot_label(index)));
         if connection.current == Some(index) {
             connection.live.select(0, index);
         }
@@ -1026,13 +1209,13 @@ impl EditorApp {
                 let is_shown = shown(&path);
                 match crate::library::rename(&path, &name) {
                     Ok(()) => {
-                        self.status = format!("Renamed to {}", name.trim());
+                        self.notices.info(format!("Renamed to {}", name.trim()));
                         // Unsaved edits keep the new name when they are saved later.
                         if let Some(preset) = self.preset.as_mut().filter(|_| is_shown) {
                             preset.set_name(name.trim());
                         }
                     }
-                    Err(e) => self.status = e,
+                    Err(e) => self.notices.error(e),
                 }
                 self.renaming = None;
                 self.rescan();
@@ -1044,9 +1227,9 @@ impl EditorApp {
                         if is_shown {
                             self.close_file();
                         }
-                        self.status = format!("Moved to {}", kept.display());
+                        self.notices.info(format!("Moved to {}", kept.display()));
                     }
-                    Err(e) => self.status = e,
+                    Err(e) => self.notices.error(e),
                 }
                 self.rescan();
             }
@@ -1072,10 +1255,10 @@ impl EditorApp {
                 Err(e) => failed.push(e),
             }
         }
-        self.status = match failed.first() {
-            None => format!("Added {added} preset(s) to the library"),
-            Some(e) => format!("Added {added}, {} not added: {e}", failed.len()),
-        };
+        match failed.first() {
+            None => self.notices.info(format!("Added {} to the library", presets(added))),
+            Some(e) => self.notices.error(format!("Added {}, {} not added: {e}", presets(added), failed.len())),
+        }
         self.rescan();
         self.panel = Panel::Library;
         self.screen = Screen::Editor;
@@ -1088,18 +1271,13 @@ impl EditorApp {
                     self.pedal_preset = self.preset.take();
                 }
                 self.selected_block = preset.blocks().first().map(|b| b.key.clone());
-                self.status = if self.connection.is_some() {
-                    format!("Library: {} · not on the pedal", preset.name())
-                } else {
-                    format!("Library: {}", preset.name())
-                };
                 self.preset = Some(preset);
                 self.showing_file = Some(path);
                 self.drag = None;
                 self.unsaved = false;
                 self.history.clear();
             }
-            Err(e) => self.status = format!("{}: {e}", path.display()),
+            Err(e) => self.notices.error(format!("{}: {e}", path.display())),
         }
     }
 
@@ -1111,7 +1289,6 @@ impl EditorApp {
         self.showing_file = None;
         self.drag = None;
         self.history.clear();
-        self.status = "Connected".to_owned();
     }
 
     /// Stops showing a library file that is gone, for the pedal's preset when there is one.
@@ -1225,7 +1402,7 @@ impl EditorApp {
     fn apply_saved(&mut self, index: u64) {
         if self.connection.as_ref().is_some_and(|c| c.current == Some(index)) {
             self.pedal_unsaved = false;
-            self.status = format!("Saved to {}", nx_proto::slot_label(index));
+            self.notices.info(format!("Saved to {}", nx_proto::slot_label(index)));
         }
     }
 
@@ -1245,7 +1422,7 @@ impl EditorApp {
             Ok(shown) => shown,
             Err(e) => {
                 connection.addresses.clear();
-                self.status = format!("HX Stomp: {e}; knobs are read-only");
+                self.notices.error(format!("nx-edit cannot show this preset ({e}); its knobs are read-only"));
                 return;
             }
         };
@@ -1275,7 +1452,6 @@ impl EditorApp {
         self.preset = Some(hlx);
         self.showing_file = None;
         self.pedal_preset = None;
-        self.status = "Connected".to_owned();
     }
 
     fn snapshots(&mut self, ui: &mut Ui) {
@@ -1464,13 +1640,23 @@ pub(crate) fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn pill(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
-    Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(255)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            add(ui);
-        });
-    });
+fn pill(ui: &mut Ui, add: impl FnOnce(&mut Ui)) -> egui::Response {
+    Frame::new()
+        .fill(theme::PANEL)
+        .corner_radius(CornerRadius::same(255))
+        .inner_margin(Margin::symmetric(14, 10))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                add(ui);
+            });
+        })
+        .response
+}
+
+/// "1 preset", "3 presets".
+fn presets(n: usize) -> String {
+    if n == 1 { "1 preset".to_owned() } else { format!("{n} presets") }
 }
 
 pub(crate) fn chip(ui: &mut Ui, text: &str) {
@@ -1897,11 +2083,11 @@ impl eframe::App for EditorApp {
         if self.closing {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if let Some(connection) = &self.connection {
-            if let Some(error) = connection.live.errors().pop() {
-                self.status = format!("HX Stomp: {error}");
-            }
+        self.watch_connection();
+        if self.connection.is_some() || self.connector.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        } else if self.notices.current(std::time::Instant::now()).is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
         }
         egui::Panel::top("top").frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(10))).show(ui, |ui| {
             if self.top_bar(ui) {
@@ -1919,7 +2105,7 @@ impl eframe::App for EditorApp {
                 self.customtone.show(ui);
                 let saved = self.customtone.take_saved();
                 if let Some(last) = saved.last() {
-                    self.status = format!("Downloaded to {}", last.path.display());
+                    self.notices.info(format!("Downloaded to {}", last.path.display()));
                     self.rescan();
                 }
                 if let Some(tone) = saved.into_iter().rfind(|d| d.assign) {
@@ -1931,6 +2117,9 @@ impl eframe::App for EditorApp {
             let lanes = self.preset.as_ref().map(|p| lanes(p, self.catalog.as_ref())).unwrap_or_default();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = GAP;
+                if self.connection.is_none() {
+                    self.lost_banner(ui);
+                }
                 self.chain_card(ui, &lanes);
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = GAP;
@@ -2230,7 +2419,7 @@ mod pedal_tests {
             app.take_updates();
         }
         assert_eq!(saves(&device), [Request::SavePreset { setlist: 0, index: 6, name: "NX Test".into() }]);
-        assert_eq!(app.status, "Saved to 03A");
+        assert_eq!(app.notices.last(), "Saved to 03A");
     }
 
     #[test]
@@ -2357,7 +2546,7 @@ mod pedal_tests {
         harness.run();
         harness.get_all_by_label("Simple Delay").next().unwrap().click();
         harness.run();
-        assert!(harness.state().status.starts_with("Adding"), "{}", harness.state().status);
+        assert!(harness.state().notices.last().starts_with("Adding"), "{}", harness.state().notices.last());
         assert_eq!(sent_once(&device, chain_edit, 1), [Request::InsertBlock { block: 1, model: 80, engine: 8, cab: None }]);
     }
 
@@ -2429,7 +2618,7 @@ mod pedal_tests {
         app.choose_model("HD2_ReturnMono1", false);
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(device.requests().iter().all(|(_, _, r)| !chain_edit(r)));
-        assert!(app.status.contains("not known yet"), "{}", app.status);
+        assert!(app.notices.last().contains("not known yet"), "{}", app.notices.last());
     }
 
     #[test]
@@ -2445,6 +2634,50 @@ mod pedal_tests {
         let sync = app.preset.as_ref().unwrap().blocks().into_iter().find(|b| b.key == "block4").unwrap().params.into_iter().find(|(k, _)| k == "TempoSync1").unwrap().1;
         assert_eq!(sync, serde_json::json!(true));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_lost_pedal_leaves_its_preset_read_only_and_says_what_its_edits_are() {
+        let Some((mut app, device)) = on_nx_test(true) else { return };
+        device.on_request(|_, _, r| match r {
+            Request::SetParam { .. } => nx_session::fake::Reply::Status(255, rmpv::Value::Nil),
+            _ => nx_session::fake::Reply::Ok(rmpv::Value::Nil),
+        });
+        app.set_param("block0", "Bass", 0.3);
+        wait_for("the worker never stopped", || !app.connection.as_ref().unwrap().live.running());
+        app.watch_connection();
+        assert!(app.connection.is_none());
+        assert_eq!(app.preset.as_ref().unwrap().name(), "NX Test", "what was shown stays");
+        assert!(!app.editable() && !app.can_save());
+        let lost = app.lost.as_ref().expect("the loss is remembered");
+        assert_eq!((lost.place, lost.unsaved), (Some(6), true));
+        assert_eq!(app.notices.last(), "The HX Stomp was disconnected");
+    }
+
+    #[test]
+    fn the_connector_shows_the_pedal_it_found() {
+        let Some((connection, _device)) = connection() else { return };
+        let document = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nx-proto/tests/fixtures/18-export-preset.doc")).unwrap();
+        let found = crate::device::DevicePreset { name: "NX Test".into(), index: Some(6), document, modified: true };
+        let preset = found.to_hlx(&connection.syms).unwrap();
+        let linked = std::sync::Mutex::new(Some(crate::connect::Linked { connection, preset, modified: true, notes: Vec::new() }));
+        let mut app = EditorApp::new(None, None, String::new(), None);
+        app.connect_with(std::sync::Arc::new(move || linked.lock().unwrap().take().ok_or_else(|| "found once".to_owned())));
+        wait_for("never connected", || {
+            app.watch_connection();
+            app.connection.is_some()
+        });
+        assert_eq!(app.preset.as_ref().unwrap().name(), "NX Test");
+        assert_eq!(app.panel, Panel::Presets);
+        assert!(app.can_save(), "the pedal's own unsaved edits count");
     }
 
     #[test]

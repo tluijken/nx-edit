@@ -140,12 +140,13 @@ Windows).
 
 ```
 nx-edit [preset.hlx]                      open the editor, optionally with a library preset
-nx-edit --from-device                     connect to the pedal and open its current preset
 nx-edit --from-capture <capture.pcapng>   show the preset found in a USB capture
 nx-edit --import-hxedit <installer.exe | HX Edit folder>   import HX Edit's model data
 ```
 
-Your user needs access to the pedal's USB device (vendor `0e41`, HX Stomp `0e41:4246`), for example
+nx-edit looks for the pedal by itself, and keeps looking while it is not plugged in or another
+program holds it; the dot at the top right says whether it is connected, and a click on it looks
+right away. Your user needs access to the pedal's USB device (vendor `0e41`, HX Stomp `0e41:4246`), for example
 through a udev rule (see "Installing on Linux"). While the pedal is passed through to a VM, nx-edit
 cannot reach it.
 

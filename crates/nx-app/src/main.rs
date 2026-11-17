@@ -3,19 +3,16 @@
 mod account;
 mod assign;
 mod cli;
+mod connect;
 mod customtone;
 mod history;
 mod layout;
 mod library;
+mod notice;
 mod theme;
 mod view;
 
 use nx_device::{device, live};
-
-enum Source {
-    Capture(std::path::PathBuf),
-    Device,
-}
 
 /// A GUI-subsystem program gets no console of its own; borrowing the one it was started from keeps
 /// `--help` and `--import-hxedit` output visible in a terminal.
@@ -31,10 +28,9 @@ fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut status = Vec::new();
     let res_dir = nx_catalog::default_res_dir();
-    let (preset_path, source) = match cli::parse(&args) {
+    let (preset_path, capture) = match cli::parse(&args) {
         cli::Command::Open(path) => (path, None),
-        cli::Command::OpenCapture(path) => (None, Some(Source::Capture(path))),
-        cli::Command::OpenDevice => (None, Some(Source::Device)),
+        cli::Command::OpenCapture(path) => (None, Some(path)),
         cli::Command::Import(source) => {
             let dest = nx_catalog::default_res_dir();
             match nx_catalog::import_hxedit(&source, &dest) {
@@ -51,43 +47,14 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
-    let mut connection = None;
-    let from_pedal = source.as_ref().and_then(|source| {
-        let loaded = nx_catalog::ModelSymbols::load(&res_dir.join("Helix.sym")).map_err(|e| e.to_string()).and_then(|syms| {
-            let (preset, link) = match source {
-                Source::Capture(path) => (device::preset_from_capture(path)?, None),
-                Source::Device => {
-                    let device::Connected { session, presets, preset } = device::connect_device()?;
-                    (preset, Some((session, presets)))
-                }
-            };
-            let hlx = preset.to_hlx(&syms)?;
-            let mut list_error = None;
-            let link = match link {
-                Some((session, presets)) => Some(view::Connection {
-                    presets: presets.unwrap_or_else(|e| {
-                        list_error = Some(format!("no preset list: {e}"));
-                        Vec::new()
-                    }),
-                    addresses: preset.addresses(&syms)?,
-                    live: live::Live::start(session),
-                    current: preset.index,
-                    generation: 0,
-                    syms,
-                    document: preset.document.clone(),
-                }),
-                None => None,
-            };
-            Ok((hlx, link, list_error))
-        });
+    // A capture is a pedal that is not there, so nx-edit does not look for the real one meanwhile.
+    let preset = capture.as_ref().and_then(|path| {
+        let loaded = nx_catalog::ModelSymbols::load(&res_dir.join("Helix.sym"))
+            .map_err(|e| e.to_string())
+            .and_then(|syms| device::preset_from_capture(path)?.to_hlx(&syms));
         match loaded {
-            Ok((p, link, list_error)) => {
-                status.push(match source {
-                    Source::Capture(path) => format!("From capture {}", path.display()),
-                    Source::Device => "Connected".to_owned(),
-                });
-                status.extend(list_error);
-                connection = link;
+            Ok(p) => {
+                status.push(format!("From capture {}", path.display()));
                 Some(p)
             }
             Err(e) => {
@@ -96,7 +63,6 @@ fn main() -> eframe::Result {
             }
         }
     });
-    let preset = from_pedal;
     let catalog = match nx_catalog::Catalog::load(&res_dir) {
         Ok(c) => Some(c),
         Err(e) => {
@@ -104,9 +70,6 @@ fn main() -> eframe::Result {
             None
         }
     };
-    if status.is_empty() {
-        status.push("Not connected · read-only".to_owned());
-    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("nx-edit")
@@ -121,7 +84,10 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
-            let mut app = view::EditorApp::new(preset, catalog, status.join(" · "), connection);
+            let mut app = view::EditorApp::new(preset, catalog, status.join(" · "), None);
+            if capture.is_none() {
+                app.connect_with(connect::usb());
+            }
             if let Some(path) = preset_path {
                 app.open_file(path);
             }

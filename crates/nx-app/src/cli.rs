@@ -1,12 +1,11 @@
 use std::path::{Path, PathBuf};
 
-pub const USAGE: &str = "usage: nx-edit [preset.hlx]\n       nx-edit --from-capture <capture.pcapng>\n       nx-edit --from-device\n       nx-edit --import-hxedit <HX Edit installer.exe | HX Edit folder>";
+pub const USAGE: &str = "usage: nx-edit [preset.hlx]\n       nx-edit --from-capture <capture.pcapng>\n       nx-edit --import-hxedit <HX Edit installer.exe | HX Edit folder>";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Open(Option<PathBuf>),
     OpenCapture(PathBuf),
-    OpenDevice,
     Import(PathBuf),
     Usage,
 }
@@ -16,7 +15,8 @@ pub fn parse(args: &[String]) -> Command {
         [] => Command::Open(None),
         [flag, source] if flag == "--import-hxedit" => Command::Import(PathBuf::from(source)),
         [flag, capture] if flag == "--from-capture" => Command::OpenCapture(PathBuf::from(capture)),
-        [flag] if flag == "--from-device" => Command::OpenDevice,
+        // nx-edit looks for the pedal by itself now; the flag that asked for that still starts it.
+        [flag] if flag == "--from-device" => Command::Open(None),
         [path] if !path.starts_with("--") => Command::Open(Some(PathBuf::from(path))),
         _ => Command::Usage,
     }
@@ -67,8 +67,8 @@ mod tests {
     }
 
     #[test]
-    fn from_device_reads_the_pedal() {
-        assert_eq!(parse(&args(&["--from-device"])), Command::OpenDevice);
+    fn from_device_still_starts_the_editor() {
+        assert_eq!(parse(&args(&["--from-device"])), Command::Open(None));
         assert_eq!(parse(&args(&["--from-device", "x"])), Command::Usage);
     }
 
