@@ -126,8 +126,9 @@ package includes a desktop entry and an icon.
 
 Block and parameter names come from HX Edit's own model data, which nx-edit does not ship. Import
 it once, either from the official Windows installer, which nx-edit unpacks with 7-Zip without
-running it, or from an installed HX Edit, by passing its folder (the one that holds `res`) or the
-`res` folder itself:
+running it, or from an installed HX Edit folder (the one that holds `res`, or `res` itself). On
+first start nx-edit asks for it: it offers installers it finds in Downloads and an installed HX
+Edit on Windows, and takes one dropped on the window or typed in. The same works from a terminal:
 
 ```sh
 nx-edit --import-hxedit "HX Edit v3.82 Installer.exe"

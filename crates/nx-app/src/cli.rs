@@ -22,16 +22,12 @@ pub fn parse(args: &[String]) -> Command {
     }
 }
 
-/// What the status line says when the catalog does not load: a missing directory means nothing was
-/// imported yet; anything else is a real error the user should see.
-pub fn catalog_status(err: &nx_catalog::CatalogError, res_dir: &Path) -> String {
+/// Why the catalog did not load, for the import screen: none when nothing was imported yet, which
+/// that screen says itself.
+pub fn catalog_problem(err: &nx_catalog::CatalogError, res_dir: &Path) -> Option<String> {
     match err {
-        nx_catalog::CatalogError::Io { path, source }
-            if path == res_dir && source.kind() == std::io::ErrorKind::NotFound =>
-        {
-            "No HX Edit data; import it with nx-edit --import-hxedit <installer or HX Edit folder>".to_owned()
-        }
-        other => format!("HX Edit data in {} not loaded: {other}", res_dir.display()),
+        nx_catalog::CatalogError::Io { path, source } if path == res_dir && source.kind() == std::io::ErrorKind::NotFound => None,
+        other => Some(format!("The HX Edit data in {} did not load: {other}", res_dir.display())),
     }
 }
 
@@ -79,10 +75,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_catalog_suggests_importing() {
+    fn a_catalog_never_imported_is_no_problem_to_report() {
         let dir = Path::new("/nonexistent/nx-edit/res");
         let err = nx_catalog::Catalog::load(dir).unwrap_err();
-        assert!(catalog_status(&err, dir).contains("--import-hxedit"));
+        assert_eq!(catalog_problem(&err, dir), None);
     }
 
     #[test]
@@ -91,8 +87,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("amp.models"), "not json").unwrap();
         let err = nx_catalog::Catalog::load(&dir).unwrap_err();
-        let status = catalog_status(&err, &dir);
-        assert!(status.contains("amp.models"), "{status}");
+        let problem = catalog_problem(&err, &dir).unwrap();
+        assert!(problem.contains("amp.models"), "{problem}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -110,6 +110,10 @@ pub struct EditorApp {
     closing: bool,
     /// A library preset whose place on the pedal is being chosen.
     assigning: Option<crate::assign::Assign>,
+    /// Importing HX Edit's model data while there is none.
+    setup: crate::setup::Setup,
+    /// Why the HX Edit data that is there did not load.
+    pub catalog_problem: Option<String>,
 }
 
 /// What the pedal held when the connection to it was lost.
@@ -167,6 +171,8 @@ impl EditorApp {
             leaving: None,
             assigning: None,
             closing: false,
+            setup: Default::default(),
+            catalog_problem: None,
         }
     }
 
@@ -347,6 +353,35 @@ impl EditorApp {
         self.preset = Some(preset);
         if self.panel == Panel::Library {
             self.panel = Panel::Presets;
+        }
+    }
+
+    /// What to do when there is nothing to edit yet.
+    fn nothing_open(&mut self, ui: &mut Ui) {
+        let mut connect = false;
+        let mut library = false;
+        card(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 10.0;
+            ui.label(RichText::new("Nothing open yet").font(theme::semibold(20.0)));
+            let how = if self.connector.as_ref().is_some_and(Connector::trying) {
+                "nx-edit is looking for the HX Stomp. Plug it in over USB and switch it on, or open a preset from the library."
+            } else {
+                "Plug in the HX Stomp over USB and switch it on, or open a preset from the library."
+            };
+            ui.label(RichText::new(how).font(theme::regular(14.0)).color(theme::TEXT_MID));
+            ui.horizontal(|ui| {
+                let button = |text: &str| egui::Button::new(RichText::new(text).font(theme::semibold(14.0))).corner_radius(CornerRadius::same(255)).min_size(vec2(130.0, 36.0));
+                if self.connector.is_some() {
+                    connect = ui.add(button("Look for the HX Stomp")).clicked();
+                }
+                library = ui.add(button("Open the library")).clicked();
+            });
+        });
+        if connect && let Some(connector) = self.connector.as_mut() {
+            connector.retry_now();
+        }
+        if library {
+            self.panel = Panel::Library;
         }
     }
 
@@ -1028,7 +1063,7 @@ impl EditorApp {
         let Some(place) = assign.place else { return };
         let Some(connection) = self.connection.as_ref() else { return };
         let built = (|| {
-            let catalog = self.catalog.as_ref().ok_or("HX Edit's model data is not imported (--import-hxedit)")?;
+            let catalog = self.catalog.as_ref().ok_or("HX Edit's model data is not imported yet")?;
             let bytes = std::fs::read(&assign.file).map_err(|e| format!("{}: {e}", assign.file.display()))?;
             let hlx = Preset::from_slice(&bytes).map_err(|e| e.to_string())?;
             let firmware = nx_proto::Document::decode(&connection.document).and_then(|d| d.preset()).map_err(|e| e.to_string())?.firmware;
@@ -1241,9 +1276,15 @@ impl EditorApp {
         self.library = crate::library::scan(&crate::library::default_dir());
     }
 
-    /// Copies `.hlx` files dropped on the window into the library.
+    /// Copies `.hlx` files dropped on the window into the library; while HX Edit's data is missing,
+    /// an installer or HX Edit folder dropped is imported instead.
     fn take_dropped_files(&mut self, ctx: &egui::Context) {
-        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        let mut dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        if self.catalog.is_none()
+            && let Some(at) = dropped.iter().position(|p| crate::setup::is_import_source(p))
+        {
+            self.setup.import(dropped.remove(at));
+        }
         if dropped.is_empty() {
             return;
         }
@@ -1493,7 +1534,7 @@ impl EditorApp {
 
     fn models(&mut self, ui: &mut Ui) {
         let Some(catalog) = &self.catalog else {
-            ui.label(RichText::new("No HX Edit data imported: nx-edit --import-hxedit <installer>").color(theme::TEXT_DIM));
+            ui.label(RichText::new("The models are listed once HX Edit's model data is imported.").color(theme::TEXT_DIM));
             return;
         };
         Frame::new().fill(theme::BG).corner_radius(CornerRadius::same(255)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
@@ -2084,6 +2125,17 @@ impl eframe::App for EditorApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.watch_connection();
+        if let Some(catalog) = self.setup.take_imported() {
+            self.catalog = Some(catalog);
+            self.catalog_problem = None;
+            self.notices.info("HX Edit's model data is imported");
+            if let Some(connector) = self.connector.as_mut() {
+                connector.retry_now();
+            }
+        }
+        if self.setup.busy() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
         if self.connection.is_some() || self.connector.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         } else if self.notices.current(std::time::Instant::now()).is_some() {
@@ -2119,6 +2171,12 @@ impl eframe::App for EditorApp {
                 ui.spacing_mut().item_spacing.y = GAP;
                 if self.connection.is_none() {
                     self.lost_banner(ui);
+                }
+                if self.catalog.is_none() {
+                    self.setup.show(ui, self.catalog_problem.as_deref());
+                }
+                if self.preset.is_none() {
+                    self.nothing_open(ui);
                 }
                 self.chain_card(ui, &lanes);
                 ui.horizontal_top(|ui| {
@@ -2273,6 +2331,33 @@ mod tests {
     fn param_of(harness: &Harness<'static, EditorApp>, key: &str, name: &str) -> serde_json::Value {
         let preset = harness.state().preset.clone().unwrap();
         preset.blocks().into_iter().find(|b| b.key == key).unwrap().params.into_iter().find(|(k, _)| k == name).unwrap().1
+    }
+
+    #[test]
+    fn without_hx_edit_data_a_dropped_installer_is_imported() {
+        let mut harness = Harness::builder().with_size(vec2(1200.0, 720.0)).build_eframe(|cc| {
+            theme::install(&cc.egui_ctx);
+            let mut app = EditorApp::new(None, None, String::new(), None);
+            app.setup = crate::setup::Setup::new(std::env::temp_dir().join(format!("nx-view-{}-import", std::process::id())));
+            app
+        });
+        harness.run();
+        harness.get_by_label("nx-edit needs HX Edit's model data");
+        harness.get_by_label("Nothing open yet");
+        #[derive(Debug)]
+        struct Dropped(PathBuf);
+        impl egui::DroppedFile for Dropped {
+            fn path(&self) -> &Path {
+                &self.0
+            }
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                Err("not read".into())
+            }
+        }
+        harness.input_mut().dropped_files.push(std::sync::Arc::new(Dropped("/nonexistent/HX Edit v3.82 Installer.exe".into())));
+        harness.step();
+        assert!(harness.state().setup.busy() || harness.state().setup.error.is_some(), "the drop started an import");
+        assert!(harness.state().library.entries.iter().all(|e| !e.name.contains("Installer")));
     }
 
     #[test]

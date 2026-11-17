@@ -9,6 +9,7 @@ mod history;
 mod layout;
 mod library;
 mod notice;
+mod setup;
 mod theme;
 mod view;
 
@@ -63,12 +64,9 @@ fn main() -> eframe::Result {
             }
         }
     });
-    let catalog = match nx_catalog::Catalog::load(&res_dir) {
-        Ok(c) => Some(c),
-        Err(e) => {
-            status.push(cli::catalog_status(&e, &res_dir));
-            None
-        }
+    let (catalog, catalog_problem) = match nx_catalog::Catalog::load(&res_dir) {
+        Ok(c) => (Some(c), None),
+        Err(e) => (None, cli::catalog_problem(&e, &res_dir)),
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -85,6 +83,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
             let mut app = view::EditorApp::new(preset, catalog, status.join(" · "), None);
+            app.catalog_problem = catalog_problem;
             if capture.is_none() {
                 app.connect_with(connect::usb());
             }
