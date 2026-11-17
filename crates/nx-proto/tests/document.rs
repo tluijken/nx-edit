@@ -547,3 +547,40 @@ fn snapshot_names_are_short_printable_ascii() {
     let names: Vec<_> = doc.preset().unwrap().snapshots.list.iter().map(|s| s.name.clone()).collect();
     assert_eq!(names, ["fifteen chars!!", "", "Lead"]);
 }
+
+#[test]
+fn swapping_a_block_with_an_empty_slot_moves_everything_that_belongs_to_it() {
+    let mut doc = Document::decode(&document("02-select-preset-01C")).unwrap();
+    let before = doc.preset().unwrap();
+    // Slot 4 is the second EQ, which the snapshot controller moves; slot 7 is empty.
+    doc.swap_slots(4, 7).unwrap();
+    let after = doc.preset().unwrap();
+    let block_at = |p: &nx_proto::Preset, slot: usize| p.blocks().find(|b| b.slot == slot).map(|b| b.block.clone());
+    assert_eq!(block_at(&after, 7), block_at(&before, 4));
+    assert_eq!(block_at(&after, 4), None);
+    for (was, now) in before.snapshots.list.iter().zip(&after.snapshots.list) {
+        assert_eq!(now.slots[7], was.slots[4]);
+        assert_eq!(now.slots[4], was.slots[7]);
+    }
+    assert!(before.controllers.iter().all(|a| a.slot == 4));
+    assert!(after.controllers.iter().all(|a| a.slot == 7), "{:?}", after.controllers);
+}
+
+#[test]
+fn swapping_twice_gives_the_document_back_byte_for_byte() {
+    let original = document("02-select-preset-01C");
+    let mut doc = Document::decode(&original).unwrap();
+    doc.swap_slots(2, 5).unwrap();
+    assert_ne!(doc.encode().unwrap(), original);
+    doc.swap_slots(5, 2).unwrap();
+    assert_eq!(doc.encode().unwrap(), original);
+}
+
+#[test]
+fn only_block_slots_of_one_path_swap() {
+    let mut doc = Document::decode(&document("02-select-preset-01C")).unwrap();
+    assert!(doc.swap_slots(0, 3).is_err(), "slot 0 is the input");
+    assert!(doc.swap_slots(3, 9).is_err(), "slot 9 is the output");
+    assert!(doc.swap_slots(3, 17).is_err(), "slot 17 is on path B");
+    assert!(doc.swap_slots(17, 11).is_ok(), "both on path B");
+}

@@ -129,3 +129,18 @@ fn changing_a_model_is_the_message_hx_edit_sends() {
 fn removing_a_block_is_the_message_hx_edit_sends() {
     assert_eq!(sent(&Request::RemoveBlock { block: 1 }, 1014), "{102: 1014, 100: 28, 101: {98: 1}}");
 }
+
+#[test]
+fn writing_the_edit_buffer_carries_the_document_as_a_str() {
+    let document = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/18-export-preset.doc")).unwrap();
+    let request = Request::WriteDocument { document: document.clone() };
+    let bytes = request.encode(1013);
+    let decoded = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    let args = decoded.as_map().unwrap().iter().find(|(k, _)| k.as_u64() == Some(101)).unwrap().1.clone();
+    let carried = args.as_map().unwrap().iter().find(|(k, _)| k.as_u64() == Some(110)).unwrap().1.clone();
+    let rmpv::Value::String(s) = carried else { panic!("not a str") };
+    assert_eq!(s.as_bytes(), &document[..]);
+    let at = bytes.windows(document.len()).position(|w| w == &document[..]).unwrap();
+    assert_eq!(bytes[at - 3], 0xda, "a str16, as HX Edit writes a document of this size");
+    assert_eq!(Request::from_value(&decoded), Some((1013, request)));
+}

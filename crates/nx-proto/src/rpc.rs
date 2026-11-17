@@ -29,6 +29,9 @@ pub enum Request {
     ChangeModel { block: u64, model: u32, cab: Option<u32> },
     /// Empties a slot (op 28).
     RemoveBlock { block: u64 },
+    /// Replaces the preset being edited with `document` (op 21); deferred, completed by notification
+    /// 20 and followed by notification 21.
+    WriteDocument { document: Vec<u8> },
     SelectBlock { block: u64, path: u64 },
     SelectSnapshot { index: u64 },
     /// Stores the preset being edited at a place under `name` (op 71); the pedal saves its own edit
@@ -89,6 +92,7 @@ impl Request {
             Self::InsertBlock { .. } => 39,
             Self::ChangeModel { .. } => 40,
             Self::RemoveBlock { .. } => 28,
+            Self::WriteDocument { .. } => 21,
             Self::SelectBlock { .. } => 78,
             Self::SelectSnapshot { .. } => 88,
             Self::SavePreset { .. } => 71,
@@ -113,6 +117,7 @@ impl Request {
             }
             Self::ChangeModel { block, model, cab } => map(vec![(98, int(*block)), (100, model_ref(*model, *cab))]),
             Self::RemoveBlock { block } => map(vec![(98, int(*block))]),
+            Self::WriteDocument { document } => map(vec![(110, raw_str(document))]),
             Self::SelectBlock { block, path } => map(vec![(98, int(*block)), (26, int(*path))]),
             Self::SelectSnapshot { index } => map(vec![(92, int(*index))]),
             Self::SavePreset { setlist, index, name } => {
@@ -130,6 +135,9 @@ impl Request {
     }
 
     pub fn encode(&self, txn: u64) -> Vec<u8> {
+        if let Self::WriteDocument { document } = self {
+            return encode_write(txn, document);
+        }
         let mut out = Vec::new();
         rmpv::encode::write_value(&mut out, &self.to_value(txn)).expect("writing to a Vec cannot fail");
         out
@@ -165,6 +173,11 @@ impl Request {
                 Some(Self::ChangeModel { block: u(98)?, model, cab })
             }
             28 => Some(Self::RemoveBlock { block: u(98)? }),
+            21 => match get(a, 110)? {
+                Value::String(s) => Some(Self::WriteDocument { document: s.as_bytes().to_vec() }),
+                Value::Binary(b) => Some(Self::WriteDocument { document: b.clone() }),
+                _ => None,
+            },
             41 => Some(Self::SetBlockEnabled { block: u(98)?, enabled: get(a, 59)?.as_bool()? }),
             78 => Some(Self::SelectBlock { block: u(98)?, path: u(26)? }),
             88 => Some(Self::SelectSnapshot { index: u(92)? }),
@@ -183,5 +196,33 @@ impl Request {
         .filter(|r| r.args() == args)
         .unwrap_or(Self::Other { opcode, args });
         Some((txn, parsed))
+    }
+}
+
+/// Op 21 as HX Edit writes it: `{102: txn, 100: 21, 101: {110: document}}` with the document as a
+/// str, although it is not UTF-8, which rmpv would only write as bin.
+fn encode_write(txn: u64, document: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x83];
+    rmpv::encode::write_value(&mut out, &int(TXN)).expect("writing to a Vec cannot fail");
+    rmpv::encode::write_value(&mut out, &int(txn)).expect("writing to a Vec cannot fail");
+    out.extend([OPCODE as u8, 21, ARGS as u8, 0x81, 110]);
+    out.extend(str_head(document.len()));
+    out.extend_from_slice(document);
+    out
+}
+
+/// The document as rmpv reads it off the wire: a str that is not UTF-8. rmpv builds such a value
+/// only by reading it (and writes it as bin), so `encode_write` puts it on the wire instead.
+fn raw_str(document: &[u8]) -> Value {
+    let wire = encode_write(0, document);
+    let at = wire.len() - document.len() - str_head(document.len()).len();
+    rmpv::decode::read_value(&mut &wire[at..]).expect("a str written by encode_write")
+}
+
+fn str_head(len: usize) -> Vec<u8> {
+    match len {
+        n if n < 0x100 => vec![0xd9, n as u8],
+        n if n < 0x1_0000 => [vec![0xda], (n as u16).to_be_bytes().to_vec()].concat(),
+        n => [vec![0xdb], (n as u32).to_be_bytes().to_vec()].concat(),
     }
 }

@@ -218,6 +218,53 @@ impl Document {
         Ok(())
     }
 
+    /// Exchanges two slots of one path of DSP 0, a block with another block or with an empty slot,
+    /// together with everything that refers to them by slot number: each snapshot's slot states, the
+    /// snapshot list's per-slot flags (key 13), controller assignments and the cursor. A block moves
+    /// this way; the edited document is then written back with op 21.
+    pub fn swap_slots(&mut self, a: usize, b: usize) -> Result<(), DocError> {
+        let path = |slot: usize| match slot {
+            1..=8 => Some(0),
+            11..=18 => Some(1),
+            _ => None,
+        };
+        if path(a).is_none() || path(a) != path(b) {
+            return Err(DocError::Value(format!("slots {a} and {b} are not block slots of one path")));
+        }
+        for slot in [a, b] {
+            let (kind, _) = self.slot_body_mut(slot)?;
+            if kind != KIND_BLOCK && kind != KIND_EMPTY {
+                return Err(DocError::Value(format!("slot {slot} holds neither a block nor nothing")));
+            }
+        }
+        swap_entries(self.tone.get_mut(0).and_then(|d| d.get_mut(22)), a, b, "slots")?;
+        let snaps = self.tone.get_mut(10).ok_or_else(|| shape("no snapshots (key 10)"))?;
+        if let Some(Item::Array(list, _)) = snaps.get_mut(10) {
+            for snapshot in list {
+                swap_entries(snapshot.get_mut(3), a, b, "snapshot slot states")?;
+            }
+        }
+        if snaps.get(13).is_some() {
+            swap_entries(snaps.get_mut(13), a, b, "snapshot slot flags")?;
+        }
+        if let Some(Item::Array(controllers, _)) = self.tone.get_mut(4) {
+            for assignments in controllers.iter_mut().filter_map(|c| match c {
+                Item::Array(list, _) => Some(list),
+                _ => None,
+            }) {
+                for assignment in assignments {
+                    if let Some(slot) = assignment.get_mut(1).and_then(|a| a.get_mut(5)) {
+                        exchange(slot, a, b);
+                    }
+                }
+            }
+        }
+        if let Some(slot) = self.tone.get_mut(6).and_then(|c| c.get_mut(98)) {
+            exchange(slot, a, b);
+        }
+        Ok(())
+    }
+
     fn snapshot_count(&self) -> usize {
         self.tone.get(10).and_then(|s| s.get(10)).and_then(Item::as_array).map_or(0, <[Item]>::len)
     }
@@ -232,6 +279,30 @@ impl Document {
         let kind = entry.get(19).and_then(Item::as_int).ok_or_else(|| shape(format!("slot {slot} has no kind")))?;
         let body = entry.get_mut(20).ok_or_else(|| shape(format!("slot {slot} has no body")))?;
         Ok((kind, body))
+    }
+}
+
+fn swap_entries(list: Option<&mut Item>, a: usize, b: usize, what: &str) -> Result<(), DocError> {
+    match list {
+        Some(Item::Array(items, _)) if a < items.len() && b < items.len() => {
+            items.swap(a, b);
+            Ok(())
+        }
+        _ => Err(shape(format!("{what} do not reach slots {a} and {b}"))),
+    }
+}
+
+/// A slot number referring to `a` now refers to `b` and the other way round, in the same encoding.
+fn exchange(slot: &mut Item, a: usize, b: usize) {
+    if let Item::Int(v, form) = slot {
+        let now = match *v {
+            v if v == a as i64 => b as i64,
+            v if v == b as i64 => a as i64,
+            v => v,
+        };
+        if tree::fits(now, *form) {
+            *v = now;
+        }
     }
 }
 
