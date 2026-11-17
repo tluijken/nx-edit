@@ -144,3 +144,27 @@ fn writing_the_edit_buffer_carries_the_document_as_a_str() {
     assert_eq!(bytes[at - 3], 0xda, "a str16, as HX Edit writes a document of this size");
     assert_eq!(Request::from_value(&decoded), Some((1013, request)));
 }
+
+#[test]
+fn importing_a_file_to_a_place_is_what_hx_edit_sends_in_capture_19() {
+    let Some(dir) = captures_dir() else { return };
+    let filter = Filter { endpoints: Some(vec![0x01]), ..Default::default() };
+    let mut reassembler = Reassembler::default();
+    let mut sent = Vec::new();
+    for t in read_transfers(File::open(dir.join("19-import-to-03B.pcapng")).unwrap(), &filter).unwrap() {
+        for frame in split_transfer(&t.data).unwrap() {
+            for msg in reassembler.push(&frame).unwrap() {
+                if msg.from_host && msg.service == 2 && msg.body.len() > 1 {
+                    let (txn, request) = Request::from_value(&msg.decode().unwrap()).unwrap();
+                    assert_eq!(request.encode(txn), msg.body, "{request:?}");
+                    sent.push(request);
+                }
+            }
+        }
+    }
+    let document = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/19-import-to-03B.doc")).unwrap();
+    let write = Request::WritePreset { setlist: 0, index: 7, name: "Revv Home".into(), document };
+    let at = sent.iter().position(|r| *r == write).expect("op 8 with Revv Home's document");
+    assert_eq!(sent[at - 1], Request::ControlBegin);
+    assert_eq!(sent[at + 1], Request::ControlStart);
+}

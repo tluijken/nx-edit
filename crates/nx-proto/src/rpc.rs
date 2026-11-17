@@ -37,6 +37,12 @@ pub enum Request {
     /// Stores the preset being edited at a place under `name` (op 71); the pedal saves its own edit
     /// buffer, so only the place and the name travel.
     SavePreset { setlist: u64, index: u64, name: String },
+    /// Librarian: stores `document` at a place under `name` (op 8), between [`Request::ControlBegin`]
+    /// and [`Request::ControlStart`], as HX Edit imports a file [seen, 19]. The meaning of keys 123,
+    /// 124 and 125 (false, false, 0) is unknown; the preset list holds the same three per place.
+    WritePreset { setlist: u64, index: u64, name: String, document: Vec<u8> },
+    /// Control channel, `{}`: HX Edit sends it before writing a place (op 8) and op 254 after.
+    ControlBegin,
     /// Control channel, `{}`; HX Edit sends it before listing and the device answers nil. Its
     /// meaning is unknown.
     ControlStart,
@@ -96,6 +102,8 @@ impl Request {
             Self::SelectBlock { .. } => 78,
             Self::SelectSnapshot { .. } => 88,
             Self::SavePreset { .. } => 71,
+            Self::WritePreset { .. } => 8,
+            Self::ControlBegin => 255,
             Self::ControlStart => 254,
             Self::ListSetlists => 0,
             Self::ListPresets { .. } => 1,
@@ -118,12 +126,17 @@ impl Request {
             Self::ChangeModel { block, model, cab } => map(vec![(98, int(*block)), (100, model_ref(*model, *cab))]),
             Self::RemoveBlock { block } => map(vec![(98, int(*block))]),
             Self::WriteDocument { document } => map(vec![(110, raw_str(document))]),
+            Self::WritePreset { setlist, index, name, document } => {
+                let mut pairs = place(*setlist, *index, name);
+                pairs.push((110, raw_str(document)));
+                map(pairs)
+            }
             Self::SelectBlock { block, path } => map(vec![(98, int(*block)), (26, int(*path))]),
             Self::SelectSnapshot { index } => map(vec![(92, int(*index))]),
             Self::SavePreset { setlist, index, name } => {
                 map(vec![(107, int(*setlist)), (108, int(*index)), (109, Value::from(format!("{name}\0")))])
             }
-            Self::ControlStart => map(Vec::new()),
+            Self::ControlStart | Self::ControlBegin => map(Vec::new()),
             Self::ListSetlists => Value::Nil,
             Self::ListPresets { setlist } => map(vec![(107, int(*setlist)), (101, int(2))]),
             Self::Other { args, .. } => args.clone(),
@@ -135,8 +148,12 @@ impl Request {
     }
 
     pub fn encode(&self, txn: u64) -> Vec<u8> {
-        if let Self::WriteDocument { document } = self {
-            return encode_write(txn, document);
+        match self {
+            Self::WriteDocument { document } => return encode_write(txn, 21, Vec::new(), document),
+            Self::WritePreset { setlist, index, name, document } => {
+                return encode_write(txn, 8, place(*setlist, *index, name), document);
+            }
+            _ => {}
         }
         let mut out = Vec::new();
         rmpv::encode::write_value(&mut out, &self.to_value(txn)).expect("writing to a Vec cannot fail");
@@ -178,6 +195,16 @@ impl Request {
                 Value::Binary(b) => Some(Self::WriteDocument { document: b.clone() }),
                 _ => None,
             },
+            8 => Some(Self::WritePreset {
+                setlist: u(107)?,
+                index: u(108)?,
+                name: get(a, 109)?.as_str()?.strip_suffix('\0')?.to_owned(),
+                document: match get(a, 110)? {
+                    Value::String(s) => s.as_bytes().to_vec(),
+                    Value::Binary(b) => b.clone(),
+                    _ => return None,
+                },
+            }),
             41 => Some(Self::SetBlockEnabled { block: u(98)?, enabled: get(a, 59)?.as_bool()? }),
             78 => Some(Self::SelectBlock { block: u(98)?, path: u(26)? }),
             88 => Some(Self::SelectSnapshot { index: u(92)? }),
@@ -187,6 +214,7 @@ impl Request {
                 name: get(a, 109)?.as_str()?.strip_suffix('\0')?.to_owned(),
             }),
             254 => Some(Self::ControlStart),
+            255 => Some(Self::ControlBegin),
             0 if args.is_nil() => Some(Self::ListSetlists),
             1 => Some(Self::ListPresets { setlist: u(107)? }),
             _ => None,
@@ -199,13 +227,32 @@ impl Request {
     }
 }
 
-/// Op 21 as HX Edit writes it: `{102: txn, 100: 21, 101: {110: document}}` with the document as a
-/// str, although it is not UTF-8, which rmpv would only write as bin.
-fn encode_write(txn: u64, document: &[u8]) -> Vec<u8> {
+/// A place's name and the three values after it, as the preset list and op 8 carry them.
+fn place(setlist: u64, index: u64, name: &str) -> Vec<(u64, Value)> {
+    vec![
+        (107, int(setlist)),
+        (108, int(index)),
+        (109, Value::from(format!("{name}\0"))),
+        (123, Value::Boolean(false)),
+        (124, Value::Boolean(false)),
+        (125, int(0)),
+    ]
+}
+
+/// Op 21 or op 8 as HX Edit writes it: `{102: txn, 100: opcode, 101: {..., 110: document}}` with the
+/// document as a str, although it is not UTF-8, which rmpv would only write as bin.
+fn encode_write(txn: u64, opcode: u64, head: Vec<(u64, Value)>, document: &[u8]) -> Vec<u8> {
+    let write = |out: &mut Vec<u8>, v: &Value| rmpv::encode::write_value(out, v).expect("writing to a Vec cannot fail");
     let mut out = vec![0x83];
-    rmpv::encode::write_value(&mut out, &int(TXN)).expect("writing to a Vec cannot fail");
-    rmpv::encode::write_value(&mut out, &int(txn)).expect("writing to a Vec cannot fail");
-    out.extend([OPCODE as u8, 21, ARGS as u8, 0x81, 110]);
+    for v in [int(TXN), int(txn), int(OPCODE), int(opcode), int(ARGS)] {
+        write(&mut out, &v);
+    }
+    out.push(0x80 | (head.len() as u8 + 1));
+    for (k, v) in &head {
+        write(&mut out, &int(*k));
+        write(&mut out, v);
+    }
+    out.push(110);
     out.extend(str_head(document.len()));
     out.extend_from_slice(document);
     out
@@ -214,7 +261,7 @@ fn encode_write(txn: u64, document: &[u8]) -> Vec<u8> {
 /// The document as rmpv reads it off the wire: a str that is not UTF-8. rmpv builds such a value
 /// only by reading it (and writes it as bin), so `encode_write` puts it on the wire instead.
 fn raw_str(document: &[u8]) -> Value {
-    let wire = encode_write(0, document);
+    let wire = encode_write(0, 21, Vec::new(), document);
     let at = wire.len() - document.len() - str_head(document.len()).len();
     rmpv::decode::read_value(&mut &wire[at..]).expect("a str written by encode_write")
 }

@@ -60,6 +60,12 @@ pub struct Document {
 }
 
 impl Document {
+    /// A document around a preset map built from scratch, with the magic and section table in the
+    /// forms every captured document uses.
+    pub fn new(tone: Item) -> Self {
+        Self { magic_form: LenForm::Fix, table_form: LenForm::L16, tone }
+    }
+
     /// Reads a document and checks that its section table is the one [`Document::encode`] would
     /// write, so that encoding an unedited document can never quietly change the table.
     pub fn decode(bytes: &[u8]) -> Result<Self, DocError> {
@@ -634,6 +640,8 @@ fn snapshot(item: &Item, index: usize) -> Result<Snapshot, DocError> {
         .iter()
         .map(|s| match s.as_array() {
             Some([Item::Bool(flag), Item::Bool(enabled)]) => Ok(SlotState { flag: *flag, enabled: *enabled }),
+            // HX Edit writes nil where the pedal stores false [seen, 19].
+            Some([Item::Nil, Item::Bool(enabled)]) => Ok(SlotState { flag: false, enabled: *enabled }),
             _ => Err(shape(format!("{what}: slot state is not [bool, bool]"))),
         })
         .collect::<Result<_, _>>()?;
